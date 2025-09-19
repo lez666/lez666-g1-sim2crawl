@@ -264,6 +264,30 @@ class EventCfg:
     #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     # )
 
+    # World forward velocity visualization (desired from animation vs actual measured)
+    viz_forward_velocity_world = EventTerm(
+        func=mdp.viz_forward_velocity_world_step,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        params={
+            "max_envs": 16,
+            "throttle_steps": 5,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
+    # Base +Z heading projected to world XY versus world +X reference
+    viz_heading_world_xy = EventTerm(
+        func=mdp.viz_heading_world_xy_step,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        params={
+            "max_envs": 16,
+            "throttle_steps": 5,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
 
 
 @configclass
@@ -284,7 +308,7 @@ class RewardsCfg:
     # track_ang_vel_x_exp = RewTerm(
     #     func=mdp.track_ang_vel_x_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
     # )
-    # flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=1.0)
+    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
     
     
     # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
@@ -299,21 +323,21 @@ class RewardsCfg:
     #     },
     # )
 
-    # joint_deviation_all = RewTerm(
-    #     func=mdp.joint_deviation_l1,
-    #     weight=-0.1,
-    #     params={"asset_cfg": SceneEntityCfg("robot")},
-    # )
+    joint_deviation_all = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.1,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
     
     #limits
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-10.0,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     torque_limits = RewTerm(
         func=mdp.applied_torque_limits,
-        weight=-5.0,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
@@ -352,35 +376,42 @@ class RewardsCfg:
     # )
 
     # Animation-tracking rewards (initial small weights)
-    anim_pose_l1 = RewTerm(
-        func=mdp.animation_pose_similarity_l1,
-        weight=-2.0,
-    )
+    # anim_pose_l1 = RewTerm(
+    #     func=mdp.animation_pose_similarity_l1,
+    #     weight=-2.0,
+    # )
 
-    # Contact pattern tracking from animation (strict): FL, FR, RL, RR must match
-    # Requires contact sensor to expose bodies in this order; we pass explicit names.
-    anim_contact_mismatch_l1 = RewTerm(
-        func=mdp.animation_contact_flags_mismatch_feet_l1,
-        weight=-1.0,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names=[
-                    "left_wrist_link",        # FL 
-                    "right_wrist_link",       # FR 
-                    "left_ankle_roll_link",   # RL
-                    "right_ankle_roll_link",  # RR
-                ],
-            ),
-            # Use a reasonable force threshold to detect contact from sensor
-            "force_threshold": 1.0,
-        },
-    )
+    # # Contact pattern tracking from animation (strict): FL, FR, RL, RR must match
+    # # Requires contact sensor to expose bodies in this order; we pass explicit names.
+    # anim_contact_mismatch_l1 = RewTerm(
+    #     func=mdp.animation_contact_flags_mismatch_feet_l1,
+    #     weight=-1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names=[
+    #                 "left_wrist_link",        # FL 
+    #                 "right_wrist_link",       # FR 
+    #                 "left_ankle_roll_link",   # RL
+    #                 "right_ankle_roll_link",  # RR
+    #             ],
+    #         ),
+    #         # Use a reasonable force threshold to detect contact from sensor
+    #         "force_threshold": 1.0,
+    #     },
+    # )
 
     anim_forward_vel = RewTerm(
         func=mdp.animation_forward_velocity_similarity_world_exp,
-        weight=1.,
-        params={"std": 1.0},  # Increased from 0.5 to soften the exponential curve
+        weight=3.,
+        params={"std": .5},  # Increased from 0.5 to soften the exponential curve
+    )
+
+    # Encourage base +Z heading (projected to world XY) to align with world +X
+    heading_xy_align = RewTerm(
+        func=mdp.heading_xy_alignment_world_exp,
+        weight=0.5,
+        params={"std": 0.5},
     )
 
 

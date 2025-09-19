@@ -32,6 +32,8 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+# Convenience flag to explicitly request GUI (we'll default to headless otherwise)
+parser.add_argument("--gui", action="store_true", default=False, help="Launch simulator with GUI (overrides default headless)")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -41,6 +43,12 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+# default to headless unless --gui is provided
+if not getattr(args_cli, "gui", False):
+    args_cli.headless = True
+else:
+    args_cli.headless = False
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args

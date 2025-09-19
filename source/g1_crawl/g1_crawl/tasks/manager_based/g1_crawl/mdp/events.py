@@ -45,6 +45,13 @@ _base_points_drawn = False
 _anim_sites_timestamp = 0.0
 _anim_sites_drawn = False
 
+# Separate tracker for forward-velocity world-frame arrows
+_vel_arrows_timestamp = 0.0
+_vel_arrows_drawn = False
+# Separate tracker for heading world-XY arrows
+_heading_arrows_timestamp = 0.0
+_heading_arrows_drawn = False
+
 
 def is_visualization_available() -> bool:
     """
@@ -742,6 +749,245 @@ def viz_animation_sites_step(
         except Exception as e:
             print(f"[DEBUG VIZ] draw_points (anim sites) unavailable: {e}")
 
+
+# ===== World forward-velocity visualization (desired vs. actual) =====
+def viz_forward_velocity_world_step(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    max_envs: int = 4,
+    throttle_steps: int = 1,
+    duration: float = 1.0,
+    arrow_scale: float = 1.5,
+    height_offset: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Visualize world-frame forward velocity: desired (from animation) and actual (measured).
+
+    - Desired vector: +X world with magnitude from animation metadata key 'base_forward_velocity_mps'.
+    - Actual vector: robot base linear velocity in world frame (vx, vy, vz) projected in XY.
+
+    Draws two arrows per env from a point above the base: desired (green) and actual (orange).
+    """
+    if not is_visualization_available():
+        return
+    # Throttle by common step counter
+    if throttle_steps > 1 and (getattr(env, "common_step_counter", 0) % throttle_steps != 0):
+        return
+
+    anim = get_animation()
+    meta = anim.get("metadata", {}) or {}
+    if "base_forward_velocity_mps" not in meta or meta["base_forward_velocity_mps"] is None:
+        raise RuntimeError("Animation metadata missing 'base_forward_velocity_mps' for forward-velocity viz")
+    v_target = float(meta["base_forward_velocity_mps"])  # must be > 0
+    if not np.isfinite(v_target) or v_target <= 0.0:
+        raise RuntimeError("'base_forward_velocity_mps' must be a finite positive float")
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    draw_env_ids = env_ids[: max_envs]
+    if len(draw_env_ids) == 0:
+        return
+
+    # Positions and velocities
+    base_pos_w = asset.data.root_pos_w[draw_env_ids]
+    vel_w = asset.data.root_lin_vel_w[draw_env_ids]
+
+    # Prepare draw interface and optional timed clear
+    draw_interface = omni_debug_draw.acquire_debug_draw_interface()
+    current_time = time.time()
+    global _vel_arrows_timestamp, _vel_arrows_drawn
+    if _vel_arrows_drawn and (current_time - _vel_arrows_timestamp) > duration:
+        draw_interface.clear_lines()
+        _vel_arrows_drawn = False
+
+    # Build line lists for both desired and actual in one shot to avoid internal clears
+    line_start_points: list[list[float]] = []
+    line_end_points: list[list[float]] = []
+    line_colors: list[tuple[float, float, float, float]] = []
+    line_sizes: list[float] = []
+
+    # Arrowhead parameters
+    arrowhead_length = 0.3
+    arrowhead_angle_deg = 25.0
+    angle_rad = np.radians(arrowhead_angle_deg)
+    cos_angle = np.cos(angle_rad)
+    sin_angle = np.sin(angle_rad)
+
+    # Colors: desired (green-ish), actual (orange)
+    desired_color = (0.1, 0.9, 0.2, 1.0)
+    actual_color = (1.0, 0.6, 0.1, 1.0)
+
+    def _append_arrow(start_xyz: np.ndarray, vec_xyz: np.ndarray, color: tuple[float, float, float, float], size_main: float = 4.0, size_head: float = 3.0):
+        # main arrow
+        end_xyz = start_xyz + vec_xyz * arrow_scale
+        line_start_points.append([float(start_xyz[0]), float(start_xyz[1]), float(start_xyz[2])])
+        line_end_points.append([float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])])
+        line_colors.append(color)
+        line_sizes.append(size_main)
+        # arrowhead projected in XY plane for clarity
+        direction_2d = np.array([end_xyz[0] - start_xyz[0], end_xyz[1] - start_xyz[1]], dtype=float)
+        norm_2d = np.linalg.norm(direction_2d)
+        if norm_2d > 1e-9:
+            direction_2d = direction_2d / norm_2d
+            # Left head
+            arrowhead_dir1 = np.array([
+                -direction_2d[0] * cos_angle + direction_2d[1] * sin_angle,
+                -direction_2d[1] * cos_angle - direction_2d[0] * sin_angle,
+            ])
+            head1 = end_xyz.copy()
+            head1[0] += arrowhead_dir1[0] * arrowhead_length
+            head1[1] += arrowhead_dir1[1] * arrowhead_length
+            line_start_points.append([float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])])
+            line_end_points.append([float(head1[0]), float(head1[1]), float(head1[2])])
+            line_colors.append(color)
+            line_sizes.append(size_head)
+            # Right head
+            arrowhead_dir2 = np.array([
+                -direction_2d[0] * cos_angle - direction_2d[1] * sin_angle,
+                -direction_2d[1] * cos_angle + direction_2d[0] * sin_angle,
+            ])
+            head2 = end_xyz.copy()
+            head2[0] += arrowhead_dir2[0] * arrowhead_length
+            head2[1] += arrowhead_dir2[1] * arrowhead_length
+            line_start_points.append([float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])])
+            line_end_points.append([float(head2[0]), float(head2[1]), float(head2[2])])
+            line_colors.append(color)
+            line_sizes.append(size_head)
+
+    # Build arrows
+    base_pos_cpu = base_pos_w.detach().cpu().numpy()
+    vel_w_cpu = vel_w.detach().cpu().numpy()
+    for i in range(len(draw_env_ids)):
+        start = base_pos_cpu[i].copy()
+        start[2] += float(height_offset)
+        # Desired: along +X world
+        desired_vec = np.array([v_target, 0.0, 0.0], dtype=float)
+        _append_arrow(start, desired_vec, desired_color)
+        # Actual: measured world velocity (use XY components; keep Z for 3D continuity)
+        actual_vec = np.array([vel_w_cpu[i, 0], vel_w_cpu[i, 1], 0.0], dtype=float)
+        _append_arrow(start, actual_vec, actual_color)
+
+    # Draw
+    if line_start_points:
+        # Clear previous lines for this viz before drawing new ones
+        if _vel_arrows_drawn:
+            draw_interface.clear_lines()
+        draw_interface.draw_lines(line_start_points, line_end_points, line_colors, line_sizes)
+        _vel_arrows_timestamp = current_time
+        _vel_arrows_drawn = True
+
+
+def viz_heading_world_xy_step(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    max_envs: int = 4,
+    throttle_steps: int = 1,
+    duration: float = 1.0,
+    arrow_scale: float = 1.5,
+    height_offset: float = 0.6,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Visualize robot heading: base +Z axis projected to world XY vs. world +X.
+
+    - Actual heading: quat_apply(base_quat_w, [0,0,1]) -> project to XY plane -> normalize.
+    - Reference heading: world +X = [1,0,0].
+
+    Draws two arrows per env from above the base: actual (blue) and reference (white).
+    """
+    if not is_visualization_available():
+        return
+    if throttle_steps > 1 and (getattr(env, "common_step_counter", 0) % throttle_steps != 0):
+        return
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    draw_env_ids = env_ids[: max_envs]
+    if len(draw_env_ids) == 0:
+        return
+
+    base_pos_w = asset.data.root_pos_w[draw_env_ids]
+    base_quat_w = asset.data.root_quat_w[draw_env_ids]
+
+    draw_interface = omni_debug_draw.acquire_debug_draw_interface()
+    current_time = time.time()
+    global _heading_arrows_timestamp, _heading_arrows_drawn
+    if _heading_arrows_drawn and (current_time - _heading_arrows_timestamp) > duration:
+        draw_interface.clear_lines()
+        _heading_arrows_drawn = False
+
+    line_start_points: list[list[float]] = []
+    line_end_points: list[list[float]] = []
+    line_colors: list[tuple[float, float, float, float]] = []
+    line_sizes: list[float] = []
+
+    # Arrowhead params
+    arrowhead_length = 0.3
+    arrowhead_angle_deg = 25.0
+    angle_rad = np.radians(arrowhead_angle_deg)
+    cos_angle = np.cos(angle_rad)
+    sin_angle = np.sin(angle_rad)
+
+    # Colors
+    actual_color = (0.1, 0.4, 1.0, 1.0)   # blue
+    ref_color = (1.0, 1.0, 1.0, 1.0)      # white
+
+    def _append_arrow(start_xyz: np.ndarray, vec_xyz: np.ndarray, color: tuple[float, float, float, float], size_main: float = 4.0, size_head: float = 3.0):
+        end_xyz = start_xyz + vec_xyz * arrow_scale
+        line_start_points.append([float(start_xyz[0]), float(start_xyz[1]), float(start_xyz[2])])
+        line_end_points.append([float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])])
+        line_colors.append(color)
+        line_sizes.append(size_main)
+        # arrowhead in XY plane
+        direction_2d = np.array([end_xyz[0] - start_xyz[0], end_xyz[1] - start_xyz[1]], dtype=float)
+        norm_2d = np.linalg.norm(direction_2d)
+        if norm_2d > 1e-9:
+            direction_2d = direction_2d / norm_2d
+            arrowhead_dir1 = np.array([
+                -direction_2d[0] * cos_angle + direction_2d[1] * sin_angle,
+                -direction_2d[1] * cos_angle - direction_2d[0] * sin_angle,
+            ])
+            head1 = end_xyz.copy()
+            head1[0] += arrowhead_dir1[0] * arrowhead_length
+            head1[1] += arrowhead_dir1[1] * arrowhead_length
+            line_start_points.append([float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])])
+            line_end_points.append([float(head1[0]), float(head1[1]), float(head1[2])])
+            line_colors.append(color)
+            line_sizes.append(size_head)
+            arrowhead_dir2 = np.array([
+                -direction_2d[0] * cos_angle - direction_2d[1] * sin_angle,
+                -direction_2d[1] * cos_angle + direction_2d[0] * sin_angle,
+            ])
+            head2 = end_xyz.copy()
+            head2[0] += arrowhead_dir2[0] * arrowhead_length
+            head2[1] += arrowhead_dir2[1] * arrowhead_length
+            line_start_points.append([float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])])
+            line_end_points.append([float(head2[0]), float(head2[1]), float(head2[2])])
+            line_colors.append(color)
+            line_sizes.append(size_head)
+
+    # Compute and draw per env
+    start_cpu = base_pos_w.detach().cpu().numpy()
+    quat_cpu = base_quat_w.detach().cpu()
+    z_axis_b = torch.tensor([0.0, 0.0, 1.0], device=base_quat_w.device, dtype=base_quat_w.dtype).unsqueeze(0).repeat(len(draw_env_ids), 1)
+    z_axis_w = math_utils.quat_apply(base_quat_w, z_axis_b).detach().cpu().numpy()  # [N,3]
+    for i in range(len(draw_env_ids)):
+        start = start_cpu[i].copy()
+        start[2] += float(height_offset)
+        # Actual heading: project +Z_w to XY and normalize
+        hx, hy = float(z_axis_w[i, 0]), float(z_axis_w[i, 1])
+        norm_xy = (hx * hx + hy * hy) ** 0.5
+        if norm_xy < 1e-9:
+            continue
+        actual_vec = np.array([hx / norm_xy, hy / norm_xy, 0.0], dtype=float)
+        _append_arrow(start, actual_vec, actual_color)
+        # Reference: +X world
+        ref_vec = np.array([1.0, 0.0, 0.0], dtype=float)
+        _append_arrow(start, ref_vec, ref_color)
+
+    if line_start_points:
+        if _heading_arrows_drawn:
+            draw_interface.clear_lines()
+        draw_interface.draw_lines(line_start_points, line_end_points, line_colors, line_sizes)
+        _heading_arrows_timestamp = current_time
+        _heading_arrows_drawn = True
 
 # def viz_base_positions_step(
 #     env: ManagerBasedEnv,
