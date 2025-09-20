@@ -9,7 +9,7 @@ import nanoid as nano
 
 
 # Experiment configuration
-EXPERIMENT_NAME = "g1_crawl_sweep_v13"  
+EXPERIMENT_NAME = "g1_crawl_sweep_v15"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -19,9 +19,10 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.anim_pose_l1.weight": [-2., -1., 0.],
-        "env.rewards.anim_contact_mismatch_l1.weight": [-2., -1., 0.],
-        "env.rewards.anim_forward_vel.weight": [5., 2., 1., 0.],
+        "env.rewards.anim_pose_l1.weight": [-1., -0.5, 0.],
+        "env.rewards.anim_contact_mismatch_l1.weight": [-1., -0.5, 0.],
+        "env.rewards.anim_forward_vel.weight": [2., 1.],
+        "env.rewards.heading_xy_align.weight": [1., 0.5],
     },
 
 }
@@ -35,11 +36,11 @@ SWEEP_CONFIG = {
 # A combination is excluded if it matches ALL key conditions in ANY rule below.
 EXCLUDE_CONFIG = [
     # Example: exclude the case where all three sweep params are 0.0
-    {
-        "env.rewards.anim_pose_l1.weight": 0.0,
-        "env.rewards.anim_contact_mismatch_l1.weight": 0.0,
-        "env.rewards.anim_forward_vel.weight": 0.0,
-    },
+    # {
+    #     "env.rewards.anim_pose_l1.weight": 0.0,
+    #     "env.rewards.anim_contact_mismatch_l1.weight": 0.0,
+    #     "env.rewards.anim_forward_vel.weight": 0.0,
+    # },
 ]
 
 def log_parameter_combination(combination, run_number, total_runs, log_file, status="STARTED", error=None, command_type=None, full_command=None, output_log_path=None):

@@ -313,7 +313,6 @@ class RewardsCfg:
     
     # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     
-    
     # base_height_l2 = RewTerm(
     #     func=mdp.base_height_l2,
     #     weight=-.1,
@@ -323,11 +322,11 @@ class RewardsCfg:
     #     },
     # )
 
-    joint_deviation_all = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
+    # joint_deviation_all = RewTerm(
+    #     func=mdp.joint_deviation_l1,
+    #     weight=-0.1,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    # )
     
     #limits
     dof_pos_limits = RewTerm(
@@ -365,53 +364,43 @@ class RewardsCfg:
         },
     )
 
-    # feet_air_time = RewTerm(
-    #     func=mdp.feet_air_time,
-    #     weight=0.05,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_ankle_roll_link", ".*_wrist_link"]),
-    #         "command_name": "base_velocity",
-    #         "threshold": 0.5,
-    #     },
-    # )
-
     # Animation-tracking rewards (initial small weights)
-    # anim_pose_l1 = RewTerm(
-    #     func=mdp.animation_pose_similarity_l1,
-    #     weight=-2.0,
-    # )
+    anim_pose_l1 = RewTerm(
+        func=mdp.animation_pose_similarity_l1,
+        weight=-.1,
+    )
 
-    # # Contact pattern tracking from animation (strict): FL, FR, RL, RR must match
-    # # Requires contact sensor to expose bodies in this order; we pass explicit names.
-    # anim_contact_mismatch_l1 = RewTerm(
-    #     func=mdp.animation_contact_flags_mismatch_feet_l1,
-    #     weight=-1.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=[
-    #                 "left_wrist_link",        # FL 
-    #                 "right_wrist_link",       # FR 
-    #                 "left_ankle_roll_link",   # RL
-    #                 "right_ankle_roll_link",  # RR
-    #             ],
-    #         ),
-    #         # Use a reasonable force threshold to detect contact from sensor
-    #         "force_threshold": 1.0,
-    #     },
-    # )
+    # Contact pattern tracking from animation (strict): FL, FR, RL, RR must match
+    # Requires contact sensor to expose bodies in this order; we pass explicit names.
+    anim_contact_mismatch_l1 = RewTerm(
+        func=mdp.animation_contact_flags_mismatch_feet_l1,
+        weight=-.1,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[
+                    "left_wrist_link",        # FL 
+                    "right_wrist_link",       # FR 
+                    "left_ankle_roll_link",   # RL
+                    "right_ankle_roll_link",  # RR
+                ],
+            ),
+            # Use a reasonable force threshold to detect contact from sensor
+            "force_threshold": 1.0,
+        },
+    )
 
     anim_forward_vel = RewTerm(
         func=mdp.animation_forward_velocity_similarity_world_exp,
-        weight=3.,
-        params={"std": .5},  # Increased from 0.5 to soften the exponential curve
+        weight=2.,
+        params={"std": .5},  
     )
 
     # Encourage base +Z heading (projected to world XY) to align with world +X
     heading_xy_align = RewTerm(
         func=mdp.heading_xy_alignment_world_exp,
-        weight=0.5,
-        params={"std": 0.5},
+        weight=1.,
+        params={"std": 0.25},
     )
 
 

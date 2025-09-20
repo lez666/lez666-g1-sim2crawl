@@ -271,20 +271,12 @@ def heading_xy_alignment_world_exp(
     z_b = torch.tensor([0.0, 0.0, 1.0], device=base_quat_w.device, dtype=base_quat_w.dtype)
     z_b = z_b.unsqueeze(0).expand(base_quat_w.shape[0], -1)
     z_w = quat_apply(base_quat_w, z_b)
-    if not torch.isfinite(z_w).all():
-        num_nan = torch.isnan(z_w).sum().item()
-        num_posinf = (z_w == float("inf")).sum().item()
-        num_neginf = (z_w == float("-inf")).sum().item()
-        print(f"[reward debug] heading_xy_alignment_world_exp: non-finite z_w: NaN={num_nan} +Inf={num_posinf} -Inf={num_neginf} shape={tuple(z_w.shape)}")
-        raise RuntimeError("heading_xy_alignment_world_exp encountered non-finite rotated axis")
+    
 
     # Project to XY and normalize
     hx = z_w[:, 0]
     hy = z_w[:, 1]
     norm_xy = torch.sqrt(hx * hx + hy * hy)
-    if torch.any(norm_xy <= 1e-9):
-        print("[reward debug] heading_xy_alignment_world_exp: near-zero XY projection for some envs")
-        raise RuntimeError("heading_xy_alignment_world_exp encountered near-zero projected heading norm")
     hx_n = hx / norm_xy
     hy_n = hy / norm_xy
     h_xy = torch.stack([hx_n, hy_n], dim=1)
@@ -292,28 +284,11 @@ def heading_xy_alignment_world_exp(
     # Target +X
     target = torch.tensor([1.0, 0.0], dtype=h_xy.dtype, device=h_xy.device)
 
-    # Validate std
-    try:
-        std_val = float(std)
-    except Exception:
-        print(f"[reward debug] heading_xy_alignment_world_exp: invalid std type: {type(std)} value={std}")
-        raise
-    if not torch.isfinite(torch.tensor(std_val, device=h_xy.device, dtype=h_xy.dtype)):
-        print(f"[reward debug] heading_xy_alignment_world_exp: non-finite std: {std_val}")
-        raise RuntimeError("heading_xy_alignment_world_exp received non-finite std")
-    if std_val <= 0.0:
-        print(f"[reward debug] heading_xy_alignment_world_exp: non-positive std: {std_val}")
-        raise RuntimeError("heading_xy_alignment_world_exp requires std > 0")
+
+    std_val = float(std)
 
     err_sq = torch.sum(torch.square(h_xy - target), dim=1)
-    out = torch.exp(-err_sq / (std_val ** 2))
-    if not torch.isfinite(out).all():
-        num_nan = torch.isnan(out).sum().item()
-        num_posinf = (out == float("inf")).sum().item()
-        num_neginf = (out == float("-inf")).sum().item()
-        print(f"[reward debug] heading_xy_alignment_world_exp: non-finite reward: NaN={num_nan} +Inf={num_posinf} -Inf={num_neginf} err_sq_min={float(torch.nanmin(err_sq).item()) if err_sq.numel() > 0 else 'n/a'} err_sq_max={float(torch.nanmax(err_sq).item()) if err_sq.numel() > 0 else 'n/a'} std={std_val}")
-        raise RuntimeError("heading_xy_alignment_world_exp produced non-finite reward")
-    return out
+    return torch.exp(-err_sq / (std_val ** 2))
 
 def track_lin_vel_yz_base_exp(
     env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
