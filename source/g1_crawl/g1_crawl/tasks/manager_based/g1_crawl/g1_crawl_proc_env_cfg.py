@@ -300,10 +300,10 @@ class RewardsCfg:
     track_lin_vel_yz_exp = RewTerm(
         func=mdp.track_lin_vel_yz_base_exp,
         weight=2.0,
-        params={"command_name": "base_velocity", "std": 0.5},
+        params={"command_name": "base_velocity", "std": 0.25},
     )
     track_ang_vel_x_exp = RewTerm(
-        func=mdp.track_ang_vel_x_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
+        func=mdp.track_ang_vel_x_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.25}
     )
     flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
     
@@ -352,6 +352,7 @@ class RewardsCfg:
             "threshold": 1.0,  # in Newtons (normal force magnitude)
         },
     )
+
     slippage = RewTerm(
         func=mdp.feet_slide, 
         weight=-.1,
@@ -363,7 +364,7 @@ class RewardsCfg:
 
     both_feet_air = RewTerm(
         func=mdp.both_feet_air,
-        weight=-0.1,
+        weight=-.5,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
@@ -372,7 +373,7 @@ class RewardsCfg:
 
     both_hand_air = RewTerm(
         func=mdp.both_feet_air,
-        weight=-0.1,
+        weight=-0.5,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wrist_link"),
         },
@@ -400,29 +401,9 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # base_contact = DoneTerm(
-    #     func=mdp.illegal_contact,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
-    # )
-
-# @configclass
-# class CurriculumCfg:
-#     """Curriculum terms for the MDP."""
-#     push_magnitude = CurrTerm(
-#         func=mdp.modify_event_parameter, params={"num_steps": 8000}
-#     )
-
-    # self.events.push_robot.params params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
-
-# class G1CrawlEnv(ManagerBasedRLEnv):
-#     def __init__(self, cfg: object, **kwargs):
-#         super().__init__(cfg, **kwargs)
-#         self._anim_phase_offset = torch.zeros(self.num_envs, device=self.device, dtype=torch.float3)
-
 
 @configclass
 class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
-    # env_class: type = G1CrawlEnv
     # Scene settings
     scene: G1CrawlProcSceneCfg = G1CrawlProcSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
@@ -434,10 +415,6 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
     # curriculum: CurriculumCfg = CurriculumCfg()
-
-    # def __init__(self, *args, **kwargs):
-    #     super().__init__(*args, **kwargs)
-    #     self.animation_phase_offset = 0.0
 
 
     def __post_init__(self) -> None:
@@ -465,17 +442,5 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
         self.scene.terrain.terrain_generator = None
         self.scene.height_scanner = None
        
-
         # Randomization
-
         # self.events.base_external_force_torque.params["asset_cfg"].body_names = ["torso_link"]
-
-       
-        # Commands
-        # Crawling fields
-        # self.commands.base_velocity.ranges.lin_vel_z = (-1.0, 1.0)
-        # self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
-        # self.commands.base_velocity.ranges.ang_vel_x = (-1.0, 1.0)
-
-        # terminations
-        # self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
