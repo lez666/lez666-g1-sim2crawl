@@ -427,7 +427,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
     scene: G1CrawlProcSceneCfg = G1CrawlProcSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    # commands: CommandsCfg = CommandsCfg()
+    commands: CommandsCfg = CommandsCfg()
 
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
