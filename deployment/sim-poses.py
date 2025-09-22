@@ -11,7 +11,7 @@ from tkinter import ttk
 
 
 # Hardcoded poses JSON path (no CLI argument)
-POSES_JSON_PATH: Path = Path("output-example.json")
+POSES_JSON_PATH: Path = Path("/home/logan/Projects/g1_crawl/deployment/_REF/output-example.json")
 
 # Optional: start from a specific pose in the JSON (1-based index). Set to None to disable.
 START_POSE_INDEX: int | None = 2  # e.g., set to 1 to start at "Pose 1"
@@ -161,7 +161,7 @@ class PosesUI:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preview JSON poses in MuJoCo viewer (with physics)")
-    parser.add_argument("--scene", type=Path, default=Path("./g1_description/scene_torso_collision_test.xml"), help="MuJoCo XML scene path")
+    parser.add_argument("--scene", type=Path, default=Path("/home/logan/Projects/g1_crawl/deployment/g1_description/scene_torso_collision_test.xml"), help="MuJoCo XML scene path")
     parser.add_argument("--lerp-duration", type=float, default=0.5, help="Lerp duration seconds when applying a pose")
     # Start configuration
     parser.add_argument("--start-face-down", action=argparse.BooleanOptionalAction, default=True, help="If a FREE joint exists, start the base face-down (roll=pi)")

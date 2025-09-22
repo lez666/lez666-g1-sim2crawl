@@ -38,6 +38,8 @@ POSES_JSON_PATH = (Path(__file__).parent / "_REF" / "output-example.json").as_po
 START_POSE_INDEX = 2  # 1-based index, consistent with sim-poses.py
 # Control mode: "nn" to use neural net, "hold" to freeze at initialized pose
 CONTROL_MODE = os.environ.get("G1_CONTROL_MODE", "nn").lower()
+HOLD_BEFORE_NN_SEC = float(os.environ.get("G1_HOLD_BEFORE_NN_SEC", "1.0"))
+ALWAYS_HOLD_AT_START = os.environ.get("G1_ALWAYS_HOLD_AT_START", "1").strip().lower() in {"1", "true", "yes", "y"}
 
 
 class TorchController:
@@ -86,9 +88,9 @@ class TorchController:
     projected_gravity = imu_xmat.T @ world_gravity
     # Get velocity commands and map to env's expected order [lin_vel_z, lin_vel_y, ang_vel_x]
     kb_vx, kb_vy, kb_wz = self._controller.get_command()
-    lin_vel_z = np.clip(kb_vx, 0.0, 2.0)
+    lin_vel_z = 2.0#np.clip(kb_vx, 0.0, 2.0)
     lin_vel_y = 0.0  # training used zero lateral velocity
-    ang_vel_x = np.clip(kb_wz, -1.0, 1.0)
+    ang_vel_x = 0.0 #np.clip(kb_wz, -1.0, 1.0)
     velocity_commands = np.array([lin_vel_z, lin_vel_y, ang_vel_x], dtype=np.float32)
     # velocity_commands = np.array([0.25, 0.0, 0.0])  # Forward velocity command
     
@@ -133,8 +135,10 @@ class TorchController:
 
       self._last_action = mujoco_pred.copy()  # Store in MuJoCo order
       # data.ctrl[:] =  self._default_angles
+      # print(mujoco_pred)
 
       data.ctrl[:] = mujoco_pred * self._action_scale + self._default_angles
+
 def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
   cr = math.cos(roll * 0.5)
   sr = math.sin(roll * 0.5)
@@ -235,6 +239,27 @@ class HoldPoseController:
       data.ctrl[aid] = self._hold_targets[j]
 
 
+# class HoldThenNNController:
+#   def __init__(self, hold_controller: HoldPoseController, nn_controller: TorchController, switch_time_s: float):
+#     self._hold_controller = hold_controller
+#     self._nn_controller = nn_controller
+#     self._switch_time_s = float(switch_time_s)
+#     self._switched = False
+#     self._logged_first = False
+
+#   def get_control(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+#     if (not self._switched) and data.time >= self._switch_time_s:
+#       self._switched = True
+#       print(f"[HoldThenNN] Switching to NN at t={data.time:.3f}s (threshold {self._switch_time_s:.3f}s)")
+#     if self._switched:
+#       self._nn_controller.get_control(model, data)
+#     else:
+#       if not self._logged_first:
+#         print(f"[HoldThenNN] Holding pose until t={self._switch_time_s:.3f}s; current t={data.time:.3f}s")
+#         self._logged_first = True
+#       self._hold_controller.get_control(model, data)
+
+
 def load_callback(model=None, data=None):
   mujoco.set_mjcb_control(None)
 
@@ -252,29 +277,69 @@ def load_callback(model=None, data=None):
   _apply_pose(model, data, poses[idx], drop_height_m=0.5)
   mujoco.mj_forward(model, data)
 
-  # Use XML-defined timestep to match actuator tuning
-  sim_dt = float(model.opt.timestep)
+  print(model.opt.timestep)
+  sim_dt = 0.005
   n_substeps = 4
-  if CONTROL_MODE == "nn":
-    policy = TorchController(
-        policy_path=POLICY_PATH,
-        default_angles=np.array(default_angles_config),
-        n_substeps=n_substeps,
-        action_scale=0.5,
-        vel_scale_x=2.0,
-        vel_scale_y=0.0,
-        vel_scale_rot=1.0,
-    )
-    mujoco.set_mjcb_control(policy.get_control)
-  else:
-    # Freeze joints at initialized pose by holding actuator targets to current qpos
-    joint_to_actuator = _build_joint_to_actuator_map(model)
-    hold_targets: dict[int, float] = {}
-    for j in sorted(joint_to_actuator.keys()):
-      adr = int(model.jnt_qposadr[int(j)])
-      hold_targets[int(j)] = float(data.qpos[adr])
-    hold = HoldPoseController(joint_to_actuator, hold_targets)
-    mujoco.set_mjcb_control(hold.get_control)
+  model.opt.timestep = sim_dt
+  
+  joint_to_actuator = _build_joint_to_actuator_map(model)
+  if not joint_to_actuator:
+    raise RuntimeError("No joint->actuator mapping found; cannot hold pose")
+  hold_targets: dict[int, float] = {}
+  for j in sorted(joint_to_actuator.keys()):
+    adr = int(model.jnt_qposadr[int(j)])
+    hold_targets[int(j)] = float(data.qpos[adr])
+  hold = HoldPoseController(joint_to_actuator, hold_targets)
+  for j, aid in joint_to_actuator.items():
+      data.ctrl[aid] = hold_targets[j]
+
+  mujoco.set_mjcb_control(hold.get_control)
+  # if CONTROL_MODE == "nn":
+  #   policy = TorchController(
+  #       policy_path=POLICY_PATH,
+  #       default_angles=np.array(default_angles_config),
+  #       n_substeps=n_substeps,
+  #       action_scale=0.5,
+  #       vel_scale_x=2.0,
+  #       vel_scale_y=0.0,
+  #       vel_scale_rot=1.0,
+  #   )
+  #   if ALWAYS_HOLD_AT_START and HOLD_BEFORE_NN_SEC > 0.0:
+  #     # Build a hold from current qpos, then switch to NN after delay
+  #     joint_to_actuator = _build_joint_to_actuator_map(model)
+  #     if not joint_to_actuator:
+  #       raise RuntimeError("No joint->actuator mapping found; cannot hold pose before NN")
+  #     hold_targets: dict[int, float] = {}
+  #     for j in sorted(joint_to_actuator.keys()):
+  #       adr = int(model.jnt_qposadr[int(j)])
+  #       hold_targets[int(j)] = float(data.qpos[adr])
+  #     hold = HoldPoseController(joint_to_actuator, hold_targets)
+  #     switching = HoldThenNNController(hold, policy, HOLD_BEFORE_NN_SEC)
+  #     mujoco.set_mjcb_control(switching.get_control)
+  #   else:
+  #     mujoco.set_mjcb_control(policy.get_control)
+  # else:
+  #   # Freeze joints at initialized pose by holding actuator targets to current qpos
+  #   joint_to_actuator = _build_joint_to_actuator_map(model)
+  #   if not joint_to_actuator:
+  #     raise RuntimeError("No joint->actuator mapping found; cannot hold pose")
+  #   hold_targets: dict[int, float] = {}
+  #   for j in sorted(joint_to_actuator.keys()):
+  #     adr = int(model.jnt_qposadr[int(j)])
+  #     hold_targets[int(j)] = float(data.qpos[adr])
+  #   hold = HoldPoseController(joint_to_actuator, hold_targets)
+  #   # Prepare neural controller and switch after a delay
+  #   policy = TorchController(
+  #       policy_path=POLICY_PATH,
+  #       default_angles=np.array(default_angles_config),
+  #       n_substeps=n_substeps,
+  #       action_scale=0.5,
+  #       vel_scale_x=2.0,
+  #       vel_scale_y=0.0,
+  #       vel_scale_rot=1.0,
+  #   )
+  #   switching = HoldThenNNController(hold, policy, HOLD_BEFORE_NN_SEC)
+  #   mujoco.set_mjcb_control(switching.get_control)
 
   return model, data
 

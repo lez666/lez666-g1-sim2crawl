@@ -248,37 +248,40 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity_with_viz,
         mode="interval",
-        interval_range_s=(2.0, 5.0),
+        interval_range_s=(1000,1000),
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
 
-   
+def override_value(env, env_ids, data, value, num_steps):
+        if env.common_step_counter > num_steps:
+            return value
+        return mdp.modify_term_cfg.NO_CHANGE 
 
-# @configclass
-# class CurriculumCfg:
-#     def override_value(env, env_ids, data, value, num_steps):
-#                 if env.common_step_counter > num_steps:
-#                     return value
-#                 return mdp.modify_term_cfg.NO_CHANGE
+@configclass
+class CurriculumCfg:
 
-#     command_object_pose_xrange_adr = CurrTerm(
-#                 func=mdp.modify_term_cfg,
-#                 params={
-#                     "address": "commands.base_velocity.ranges.lin_vel_z",   # note: `_manager.cfg` is omitted
-#                     "modify_fn": override_value,
-#                     "modify_params": {"value": (0.0,2.0), "num_steps": 1500}
-#                 }
-#             )
 
+    command_object_pose_xrange_adr = CurrTerm(
+                func=mdp.modify_term_cfg,
+                params={
+                    "address": "commands.base_velocity.ranges.lin_vel_z",   # note: `_manager.cfg` is omitted
+                    "modify_fn": override_value,
+                    "modify_params": {"value": (0.0,2.0), "num_steps": 25000}
+                }
+            )
+
+    push_event_freq = CurrTerm(
+                func=mdp.modify_term_cfg,
+                params={
+                    "address": "events.push_robot.interval_range_s",   # note: `_manager.cfg` is omitted
+                    "modify_fn": override_value,
+                    "modify_params": {"value": (2,5), "num_steps": 25000}
+                }
+            )
 
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-
-
-    #hold still
-    # lin_vel_l2 = RewTerm(func=mdp.lin_vel_l2, weight=-5.0)
-    # ang_vel_l2 = RewTerm(func=mdp.ang_vel_l2, weight=-5.0)
 
     #follow commands (base YZ plane and roll about X)
     track_lin_vel_yz_exp = RewTerm(
@@ -408,7 +411,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
         self.decimation = 4
         self.episode_length_s = 20.0
         # simulation settings
-        self.sim.dt = 0.005
+        self.sim.dt = 0.002
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
