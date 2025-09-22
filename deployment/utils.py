@@ -34,29 +34,29 @@ default_pos = [
 # Default angles based on env.yaml configuration (in MuJoCo joint order)
 # These are the values used by the PyTorch model training
 default_angles_config = [
-    -0.2,   # LeftHipPitch
-    0.0,    # LeftHipRoll
-    0.0,    # LeftHipYaw
-    0.42,   # LeftKnee
-    -0.23,  # LeftAnklePitch
-    0.0,    # LeftAnkleRoll
-    -0.2,   # RightHipPitch
-    0.0,    # RightHipRoll
-    0.0,    # RightHipYaw
-    0.42,   # RightKnee
-    -0.23,  # RightAnklePitch
-    0.0,    # RightAnkleRoll
-    0.0,    # WaistYaw
-    0.35,   # LeftShoulderPitch
-    0.16,   # LeftShoulderRoll
-    0.0,    # LeftShoulderYaw
-    0.87,   # LeftElbow
-    0.0,    # LeftWristRoll
-    0.35,   # RightShoulderPitch
-    -0.16,  # RightShoulderRoll
-    0.0,    # RightShoulderYaw
-    0.87,   # RightElbow
-    0.0,    # RightWristRoll
+    -1.6796101123595506,   # LeftHipPitch
+    2.4180011235955052,    # LeftHipRoll
+    1.2083865168539325,    # LeftHipYaw
+    2.1130298764044944,    # LeftKnee
+    0.194143033707865,     # LeftAnklePitch
+    0.0,                   # LeftAnkleRoll
+    -1.6796101123595506,   # RightHipPitch
+    -2.4180011235955052,   # RightHipRoll
+    -1.2083865168539325,   # RightHipYaw
+    2.1130298764044944,    # RightKnee
+    0.194143033707865,     # RightAnklePitch
+    0.0,                   # RightAnkleRoll
+    0.0,                   # WaistYaw
+    1.4578526315789473,    # LeftShoulderPitch
+    1.5778684210526317,    # LeftShoulderRoll
+    1.4238245614035088,    # LeftShoulderYaw
+    -0.3124709677419355,   # LeftElbow
+    0.0,                   # LeftWristRoll
+    1.4578526315789473,    # RightShoulderPitch
+    -1.5778684210526317,   # RightShoulderRoll
+    -1.4238245614035088,   # RightShoulderYaw
+    -0.3124709677419355,   # RightElbow
+    0.0,                   # RightWristRoll
 ]
 
 
