@@ -325,8 +325,8 @@ class RewardsCfg:
     )
 
     #regulatorization
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-2)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-4e-3)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-4.0e-5)
 
     bellyhead_drag_penalty = RewTerm(
         func=mdp.undesired_contacts,

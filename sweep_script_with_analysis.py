@@ -10,7 +10,7 @@ import nanoid as nano
 
 # Experiment configuration
 TASK_NAME = "g1-crawl-proc"
-EXPERIMENT_NAME = "g1_crawl_proc_sweep_v1"  
+EXPERIMENT_NAME = "g1_crawl_proc_sweep_v2"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -20,10 +20,8 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.flat_orientation_l2.weight": [1., 0.5, .1], #.1
-        "env.rewards.both_feet_air.weight": [-1., -0.5, -0.1], #-.1
-        "env.rewards.track_lin_vel_yz_exp.weight": [-1., -0.5, -0.1], #-.1
-        "env.rewards.track_ang_vel_x_exp.weight": [-1., -0.5, -0.1], #-.1
+        "env.rewards.flat_orientation_l2.weight": [.5, 0.2, .1], #.1
+        "env.rewards.joint_deviation_all.weight": [.5, 0.2, .1] #-.1, #-.1
 
         # "env.rewards.anim_pose_l1.weight": [-1., -0.5, 0.],
         # "env.rewards.anim_contact_mismatch_l1.weight": [-1., -0.5, 0.],
@@ -42,11 +40,10 @@ SWEEP_CONFIG = {
 # A combination is excluded if it matches ALL key conditions in ANY rule below.
 EXCLUDE_CONFIG = [
     # Example: exclude the case where all three sweep params are 0.0
-    # {
-    #     "env.rewards.anim_pose_l1.weight": 0.0,
-    #     "env.rewards.anim_contact_mismatch_l1.weight": 0.0,
-    #     "env.rewards.anim_forward_vel.weight": 0.0,
-    # },
+    {
+        "env.rewards.flat_orientation_l2.weight": 0.1,
+        "env.rewards.joint_deviation_all.weight": 0.1,
+    },
 ]
 
 def log_parameter_combination(combination, run_number, total_runs, log_file, status="STARTED", error=None, command_type=None, full_command=None, output_log_path=None):
