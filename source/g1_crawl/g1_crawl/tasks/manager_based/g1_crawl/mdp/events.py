@@ -491,11 +491,18 @@ def reset_from_animation(
     env_ids: torch.Tensor,
     json_path: str | None = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    pose_noise_range: dict[str, tuple[float, float]] | None = None,
+    velocity_noise_range: dict[str, tuple[float, float]] | None = None,
 ):
     """Reset root pose, joint positions, and joint velocities from a random frame of an animation JSON.
 
     Requires base pose indices and per-frame joint velocities to be present in the animation.
     Raises an error if any required data or joint index mapping is missing.
+
+    Optional noise can be applied to the root pose and root velocity, similar to
+    ``reset_root_state_to_pose``. Each of ``pose_noise_range`` and ``velocity_noise_range``
+    should be dictionaries mapping keys in {"x", "y", "z", "roll", "pitch", "yaw"}
+    to (min, max) tuples. If omitted or None, no noise is applied for that component.
     """
     asset: Articulation = env.scene[asset_cfg.name]
     device = asset.device
@@ -549,6 +556,24 @@ def reset_from_animation(
 
     # Zero root velocities (we currently do not map base velocities unless metadata provides explicit indices)
     root_state[:, 7:13] = 0.0
+
+    # Optionally add noise to root pose (position + orientation)
+    if pose_noise_range is not None:
+        range_list = [pose_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=device)
+        rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        # position noise
+        root_state[:, 0:3] = root_state[:, 0:3] + rand_samples[:, 0:3]
+        # orientation noise (compose delta on the right)
+        orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
+        root_state[:, 3:7] = math_utils.quat_mul(root_state[:, 3:7], orientations_delta)
+
+    # Optionally add noise to root velocity (linear + angular)
+    if velocity_noise_range is not None:
+        range_list = [velocity_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=device)
+        rand_vel = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        root_state[:, 7:13] = root_state[:, 7:13] + rand_vel
 
     # Prepare joint states
     joint_pos = asset.data.default_joint_pos[env_ids].clone()

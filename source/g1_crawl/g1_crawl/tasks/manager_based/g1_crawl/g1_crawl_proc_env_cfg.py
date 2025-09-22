@@ -222,69 +222,53 @@ class EventCfg:
     reset_base = EventTerm(
         func=mdp.reset_from_animation,
         mode="reset",
-        params={},
+        params={
+            # Small random offsets on root pose at reset (position in meters, angles in radians)
+            "pose_noise_range": {
+                "x": (-0.05, 0.05),
+                "y": (-0.05, 0.05),
+                "z": (-0.05, 0.2),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (-0.10, 0.10),
+            },
+            # Small random root velocity at reset (linear m/s, angular rad/s)
+            "velocity_noise_range": {
+                "x": (-0.20, 0.20),
+                "y": (-0.20, 0.20),
+                "z": (-0.3, 0.3),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (-0.30, 0.30),
+            },
+        },
     )
 
-    # Disable default joint reset since animation sets joints explicitly
-    # reset_robot_joints = EventTerm(
-    #     func=mdp.reset_joints_by_scale,
-    #     mode="reset",
-    #     params={
-    #         "position_range": (1.0, 1.0),
-    #         "velocity_range": (0.0, 0.0),
-    #     },
-    # )
 
-    # interval
-    # viz_anim_sites = EventTerm(
-    #     func=mdp.viz_animation_sites_step,
-    #     mode="interval",
-    #     interval_range_s=(0.0,0.0),
-    #     params={
-    #         "max_envs": 32,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
-    # viz_base_step = EventTerm(
-    #     func=mdp.viz_base_positions_step,
-    #     mode="interval",
-    #     interval_range_s=(0.0, 0.0),
-    #     params={
-    #         "max_envs": 32,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity_with_viz,
-    #     mode="interval",
-    #     interval_range_s=(2.0, 2.0),
-    #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity_with_viz,
+        mode="interval",
+        interval_range_s=(2.0, 5.0),
+        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+    )
 
-    # World forward velocity visualization (desired from animation vs actual measured)
-    # viz_forward_velocity_world = EventTerm(
-    #     func=mdp.viz_forward_velocity_world_step,
-    #     mode="interval",
-    #     interval_range_s=(0.0, 0.0),
-    #     params={
-    #         "max_envs": 16,
-    #         "throttle_steps": 5,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
+   
 
-    # # Base +Z heading projected to world XY versus world +X reference
-    # viz_heading_world_xy = EventTerm(
-    #     func=mdp.viz_heading_world_xy_step,
-    #     mode="interval",
-    #     interval_range_s=(0.0, 0.0),
-    #     params={
-    #         "max_envs": 16,
-    #         "throttle_steps": 5,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
+# @configclass
+# class CurriculumCfg:
+#     def override_value(env, env_ids, data, value, num_steps):
+#                 if env.common_step_counter > num_steps:
+#                     return value
+#                 return mdp.modify_term_cfg.NO_CHANGE
 
+#     command_object_pose_xrange_adr = CurrTerm(
+#                 func=mdp.modify_term_cfg,
+#                 params={
+#                     "address": "commands.base_velocity.ranges.lin_vel_z",   # note: `_manager.cfg` is omitted
+#                     "modify_fn": override_value,
+#                     "modify_params": {"value": (0.0,2.0), "num_steps": 1500}
+#                 }
+#             )
 
 
 @configclass
