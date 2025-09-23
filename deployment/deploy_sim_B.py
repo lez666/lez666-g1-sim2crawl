@@ -129,7 +129,7 @@ class TorchController:
         projected_gravity = imu_xmat.T @ world_gravity
 
         # Fixed velocity commands [lin_vel_z, lin_vel_y, ang_vel_x]
-        velocity_commands = np.array([2.0, 0.0, 0.0], dtype=np.float32)
+        velocity_commands = np.array([0.4, 0.0, 0.0], dtype=np.float32)
 
         # Joint states (MuJoCo order) → PyTorch order
         joint_pos_mujoco = data.qpos[7:] - self._default_angles
@@ -160,7 +160,6 @@ class TorchController:
 
         mujoco_pred = remap_pytorch_to_mujoco(pytorch_pred)
         self._last_action = mujoco_pred.copy()
-        print(mujoco_pred)
         data.ctrl[:] = mujoco_pred * self._action_scale + self._default_angles
         # data.ctrl[:] = self._default_angles
 

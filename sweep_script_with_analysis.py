@@ -21,7 +21,8 @@ SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
 
-        "env.sim.dt": [0.005, 0.002],
+        "env.rewards.action_rate_l2.weight": [-1e-2, -1e-1],
+        "env.rewards.slippage.weight": [-.5,-.1],
     },
 
     # Grouped parameter sets: each entry is a list of dicts. Within a list,
@@ -42,10 +43,10 @@ SWEEP_CONFIG = {
     # - Parameters that appear in any grouped set MUST NOT also appear in SWEEP_PARAMS.
     # - All choices within a single group must set the same parameter keys.
     "SWEEP_PARAM_SETS": [
-        [
-            {"env.rewards.action_rate_l2.weight": -4e-3, "env.rewards.dof_torques_l2.weight":-4.0e-5},
-            {"env.rewards.action_rate_l2.weight": -1e-2, "env.rewards.dof_torques_l2.weight": -1.0e-4},
-        ],
+        # [
+        #     {"env.rewards.action_rate_l2.weight": -4e-3, "env.rewards.dof_torques_l2.weight":-4.0e-5},
+        #     {"env.rewards.action_rate_l2.weight": -1e-2, "env.rewards.dof_torques_l2.weight": -1.0e-4},
+        # ],
     ],
 
 }
@@ -69,10 +70,17 @@ def log_parameter_combination(combination, run_number, total_runs, log_file, sta
     """Log parameter combination to a text file with status tracking."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(log_file, 'a') as f:
-        f.write(f"\nRun #{run_number}/{total_runs} - {timestamp} - {status}")
+        # Include UUID (agent.run_name) inline if available
+        uuid_suffix = None
+        if isinstance(combination, dict):
+            uuid_suffix = combination.get("agent.run_name") or combination.get("run_name")
+        header = f"\nRun #{run_number}/{total_runs}"
+        if uuid_suffix:
+            header += f" [{uuid_suffix}]"
+        header += f" - {timestamp} - {status}"
         if command_type:
-            f.write(f" ({command_type})")
-        f.write("\n")
+            header += f" ({command_type})"
+        f.write(header + "\n")
         for param_name, param_value in combination.items():
             f.write(f"{param_name}: {param_value}\n")
         if full_command:
@@ -405,6 +413,18 @@ def main():
             raise RuntimeError(f"Could not find a run directory in '{log_root_path}' ending with '_{run_name}'")
         resolved_run_dir = sorted(matching_runs)[-1]
         combo_with_names["resolved_run_dir"] = resolved_run_dir
+
+        # Write sweep overrides (UUID + params) into the run directory for later analysis/labeling
+        try:
+            run_dir_full = os.path.join(log_root_path, resolved_run_dir)
+            overrides_path = os.path.join(run_dir_full, "sweep_overrides.txt")
+            with open(overrides_path, 'w') as outf:
+                outf.write(f"uuid: {run_name}\n")
+                for k, v in combination.items():
+                    outf.write(f"{k}={v}\n")
+        except Exception as e:
+            # Fail loudly
+            raise RuntimeError(f"Failed to write sweep_overrides.txt for run '{resolved_run_dir}': {e}")
 
         play_args = [
             f"agent.experiment_name={EXPERIMENT_NAME}",
