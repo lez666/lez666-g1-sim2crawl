@@ -250,17 +250,17 @@ class EventCfg:
     # )
 
 
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity_with_viz,
-    #     mode="interval",
-    #     interval_range_s=(1000,1000),
-    #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity_with_viz,
+        mode="interval",
+        interval_range_s=(1000,1000),
+        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+    )
 
-def override_value(env, env_ids, data, value, num_steps):
-        if env.common_step_counter > num_steps:
-            return value
-        return mdp.modify_term_cfg.NO_CHANGE 
+# def override_value(env, env_ids, data, value, num_steps):
+#         if env.common_step_counter > num_steps:
+#             return value
+#         return mdp.modify_term_cfg.NO_CHANGE 
 
 # @configclass
 # class CurriculumCfg:
@@ -330,7 +330,7 @@ class RewardsCfg:
     )
 
     #regulatorization
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-2)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
 
     bellyhead_drag_penalty = RewTerm(
