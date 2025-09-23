@@ -199,7 +199,7 @@ def _default_animation_path() -> str:
     # # Compute repo root from this file
     this_dir = os.path.dirname(__file__)
     repo_root = os.path.abspath(os.path.join(this_dir, "../../../../../../"))
-    candidate = os.path.join(repo_root, "assets/animation_rc3.json")
+    candidate = os.path.join(repo_root, "assets/animation_rc4.json")
 
     return candidate
 
