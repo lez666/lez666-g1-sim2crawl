@@ -77,26 +77,26 @@ class G1CrawlSceneCfg(InteractiveSceneCfg):
     )
 
 
-# @configclass
-# class CommandsCfg:
-#     """Command specifications for the MDP."""
+@configclass
+class CommandsCfg:
+    """Command specifications for the MDP."""
 
-#     base_velocity = mdp.CrawlVelocityCommandCfg(
-#         asset_name="robot",
-#         resampling_time_range=(10.0, 10.0),
-#         rel_standing_envs=0.1,
-#         rel_heading_envs=1.0,
-#         heading_command=False,
-#         heading_control_stiffness=0.5,
-#         debug_vis=True,
-#         ranges=mdp.CrawlVelocityCommandCfg.Ranges(
-#             heading=(0.0,0.0),
-#             # Crawling fields used by the command implementation
-#             lin_vel_z=(0, 1.0),
-#             lin_vel_y=(0.,0.),
-#             ang_vel_x=(-1.0, 1.0)
-#         )
-#     )
+    base_velocity = mdp.CrawlVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(10.0, 10.0),
+        rel_standing_envs=0.1,
+        rel_heading_envs=1.0,
+        heading_command=False,
+        heading_control_stiffness=0.5,
+        debug_vis=False,
+        ranges=mdp.CrawlVelocityCommandCfg.Ranges(
+            heading=(0.0, 0.0),
+            # Crawling fields used by the command implementation
+            lin_vel_z=(0.0, 1.0),
+            lin_vel_y=(0.0, 0.0),
+            ang_vel_x=(-1.0, 1.0),
+        ),
+    )
 
 
 @configclass
@@ -288,6 +288,21 @@ class EventCfg:
         },
     )
 
+    # Tie playback speed to velocity command (per-env, each step)
+    update_playback_speed = EventTerm(
+        func=mdp.update_animation_playback_speed_from_command,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        params={
+            "command_name": "base_velocity",
+            "component": "vz",  # use commanded forward (crawl) speed
+            "base_speed": 1.0,
+            "min_speed": 0.25,
+            "max_speed": 2.0,
+            "use_animation_nominal": True,
+        },
+    )
+
 
 
 @configclass
@@ -436,7 +451,7 @@ class G1CrawlEnvCfg(ManagerBasedRLEnvCfg):
     scene: G1CrawlSceneCfg = G1CrawlSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    # commands: CommandsCfg = CommandsCfg()
+    commands: CommandsCfg = CommandsCfg()
 
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()

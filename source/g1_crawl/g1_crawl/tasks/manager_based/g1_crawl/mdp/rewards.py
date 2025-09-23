@@ -180,7 +180,14 @@ def animation_forward_velocity_similarity_exp(
         raise RuntimeError("Animation metadata is missing required key 'base_forward_velocity_mps'")
     if meta["base_forward_velocity_mps"] <= 0.0:
         raise RuntimeError("Animation metadata key 'base_forward_velocity_mps' is less than or equal to 0.0")
-    v_target = float(meta["base_forward_velocity_mps"])
+    base_target = float(meta["base_forward_velocity_mps"])
+    # Per-env playback speed scaling
+    if not hasattr(env, "_anim_playback_speed"):
+        raise RuntimeError("Missing _anim_playback_speed on env. Ensure init_animation_phase_offsets ran.")
+    speed = env._anim_playback_speed  # type: ignore[attr-defined]
+    if speed.dim() == 0:
+        speed = speed.view(1).expand(asset.data.root_lin_vel_b.shape[0])
+    v_target = base_target * speed.to(device=asset.device, dtype=asset.data.root_lin_vel_b.dtype)
 
     # Measured base linear velocity in YZ order: [vz, vy]
     vel_b = asset.data.root_lin_vel_b[:, :3]
@@ -191,7 +198,8 @@ def animation_forward_velocity_similarity_exp(
         print(f"[reward debug] animation_forward_velocity_similarity_exp: non-finite vel_b: NaN={num_nan} +Inf={num_posinf} -Inf={num_neginf} shape={tuple(vel_b.shape)}")
         raise RuntimeError("animation_forward_velocity_similarity_exp encountered non-finite vel_b")
     meas_yz = vel_b[:, [2, 1]]
-    target_yz = torch.tensor([v_target, 0.0], dtype=meas_yz.dtype, device=meas_yz.device)
+    # Broadcast per-env target [vz, vy] = [v_target, 0]
+    target_yz = torch.stack([v_target, torch.zeros_like(v_target)], dim=1)
     # Validate std
     try:
         std_val = float(std)
@@ -232,7 +240,14 @@ def animation_forward_velocity_similarity_world_exp(
         raise RuntimeError("Animation metadata is missing required key 'base_forward_velocity_mps'")
     if meta["base_forward_velocity_mps"] <= 0.0:
         raise RuntimeError("Animation metadata key 'base_forward_velocity_mps' is less than or equal to 0.0")
-    v_target = float(meta["base_forward_velocity_mps"])
+    base_target = float(meta["base_forward_velocity_mps"])
+    # Per-env playback speed scaling
+    if not hasattr(env, "_anim_playback_speed"):
+        raise RuntimeError("Missing _anim_playback_speed on env. Ensure init_animation_phase_offsets ran.")
+    speed = env._anim_playback_speed  # type: ignore[attr-defined]
+    if speed.dim() == 0:
+        speed = speed.view(1).expand(asset.data.root_lin_vel_w.shape[0])
+    v_target = base_target * speed.to(device=asset.device, dtype=asset.data.root_lin_vel_w.dtype)
 
     # Measured base linear velocity in world frame XY order: [vx, vy]
     vel_w = asset.data.root_lin_vel_w[:, :3]
@@ -244,7 +259,8 @@ def animation_forward_velocity_similarity_world_exp(
         raise RuntimeError("animation_forward_velocity_similarity_world_exp encountered non-finite vel_w")
     meas_xy = vel_w[:, [0, 1]]
 
-    target_xy = torch.tensor([v_target, 0.0], dtype=meas_xy.dtype, device=meas_xy.device)
+    # Broadcast per-env target [vx, vy] = [v_target, 0]
+    target_xy = torch.stack([v_target, torch.zeros_like(v_target)], dim=1)
     
     err_sq = torch.sum(torch.square(meas_xy - target_xy), dim=1)
     out = torch.exp(-err_sq / (std ** 2))

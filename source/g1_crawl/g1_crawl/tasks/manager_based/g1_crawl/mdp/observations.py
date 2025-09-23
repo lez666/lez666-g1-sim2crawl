@@ -44,12 +44,30 @@ def compute_animation_phase_and_frame(env: ManagerBasedRLEnv):
     # Choose device: prefer env.device, else use phase offset's device
     device = getattr(env, "device", getattr(env._anim_phase_offset, "device"))  # type: ignore[attr-defined]
 
-    # Episode time per env (GPU)
-    t_s = env.episode_length_buf.to(device=device, dtype=torch.float32) * float(env.step_dt)
+    # Require initialized per-env speed and accumulator
+    if not hasattr(env, "_anim_playback_speed"):
+        raise RuntimeError("Missing _anim_playback_speed on env. Ensure init_animation_phase_offsets ran.")
+    if not hasattr(env, "_anim_phase_accum"):
+        raise RuntimeError("Missing _anim_phase_accum on env. Ensure init_animation_phase_offsets ran.")
+
+    # Per-env playback speed (multiplier, 1.0 = realtime)
+    speed = env._anim_playback_speed.to(device=device, dtype=torch.float32)  # type: ignore[attr-defined]
+    phase_accum = env._anim_phase_accum.to(device=device, dtype=torch.float32)  # type: ignore[attr-defined]
+
+    # Advance accumulator once per global step to avoid double-counting within a step
+    current_step = int(getattr(env, "common_step_counter", int(env.episode_length_buf.max().item()) if hasattr(env, "episode_length_buf") else 0))
+    last_step = int(getattr(env, "_anim_last_step", -1))
+    if current_step != last_step:
+        # delta phase per step scaled by playback speed
+        dphase = (float(env.step_dt) / cycle_time) * speed
+        phase_accum = (phase_accum + dphase) % 1.0
+        # write back to env (keep device)
+        env._anim_phase_accum = phase_accum  # type: ignore[attr-defined]
+        setattr(env, "_anim_last_step", current_step)
+
+    # Combine offset + accumulated phase
     phase_offset = env._anim_phase_offset.to(device=device, dtype=torch.float32)  # type: ignore[attr-defined]
-
-
-    phase = (phase_offset + (t_s / cycle_time)) % 1.0
+    phase = (phase_offset + phase_accum) % 1.0
 
 
     frame_idx = torch.floor(phase * float(T)).to(dtype=torch.long, device=device)

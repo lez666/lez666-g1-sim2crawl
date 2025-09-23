@@ -468,6 +468,118 @@ def _build_joint_velocity_index_map(asset: Articulation, joints_meta, qvel_label
     return index_map
 
 
+# ===== Animation playback speed helpers =====
+def set_animation_playback_speed(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    speed: float | torch.Tensor,
+):
+    """Set per-env animation playback speed multiplier.
+
+    speed: float or tensor broadcastable to [len(env_ids)] with values > 0.
+    """
+    if not hasattr(env, "_anim_playback_speed"):
+        raise RuntimeError("_anim_playback_speed not initialized. Ensure init_animation_phase_offsets ran at startup.")
+    if isinstance(speed, (float, int)):
+        val = float(speed)
+        if not math.isfinite(val) or val <= 0.0:
+            raise RuntimeError(f"Invalid playback speed: {speed}")
+        env._anim_playback_speed[env_ids] = float(val)  # type: ignore[attr-defined]
+    elif isinstance(speed, torch.Tensor):
+        if speed.numel() == 1:
+            val = float(speed.item())
+            if not math.isfinite(val) or val <= 0.0:
+                raise RuntimeError(f"Invalid playback speed tensor value: {val}")
+            env._anim_playback_speed[env_ids] = float(val)  # type: ignore[attr-defined]
+        else:
+            if int(speed.shape[0]) != int(len(env_ids)):
+                raise RuntimeError("Speed tensor length must match env_ids length")
+            if (speed <= 0).any() or not torch.isfinite(speed).all():
+                raise RuntimeError("Speed tensor must be positive finite values")
+            env._anim_playback_speed[env_ids] = speed.to(device=env._anim_playback_speed.device, dtype=env._anim_playback_speed.dtype)  # type: ignore[attr-defined]
+    else:
+        raise TypeError(f"Unsupported speed type: {type(speed).__name__}")
+
+
+def randomize_animation_playback_speed(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    min_speed: float = 0.5,
+    max_speed: float = 1.5,
+):
+    """Randomize per-env playback speed uniformly in [min_speed, max_speed]."""
+    if min_speed <= 0.0 or max_speed <= 0.0 or max_speed < min_speed:
+        raise RuntimeError("Invalid speed range for randomization")
+    if not hasattr(env, "_anim_playback_speed"):
+        raise RuntimeError("_anim_playback_speed not initialized. Ensure init_animation_phase_offsets ran at startup.")
+    rng = torch.rand(len(env_ids), device=env._anim_playback_speed.device)  # type: ignore[attr-defined]
+    speeds = min_speed + (max_speed - min_speed) * rng
+    env._anim_playback_speed[env_ids] = speeds  # type: ignore[attr-defined]
+
+
+def update_animation_playback_speed_from_command(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    command_name: str = "base_velocity",
+    component: str = "vz",
+    base_speed: float = 1.0,
+    scale: float | None = None,
+    min_speed: float = 0.25,
+    max_speed: float = 3.0,
+    abs_value: bool = True,
+    use_animation_nominal: bool = True,
+):
+    """Update per-env animation playback speed from a command term.
+
+    Mapping strategies:
+    - If use_animation_nominal and animation metadata provides 'base_forward_velocity_mps' (v_nominal > 0):
+        speed = clamp(base_speed * (|cmd_vz| / v_nominal), min_speed, max_speed)
+      where 'component' selects which command element to use. Defaults to 'vz'.
+    - Else, fallback to affine mapping:
+        speed = clamp(base_speed + (scale or 0.0) * (|cmd_component|), min_speed, max_speed)
+    """
+    if not hasattr(env, "command_manager"):
+        raise RuntimeError("command_manager not available on env. Ensure commands are configured in EnvCfg.")
+    if not hasattr(env, "_anim_playback_speed"):
+        raise RuntimeError("_anim_playback_speed not initialized. Ensure init_animation_phase_offsets ran at startup.")
+
+    cmd = env.command_manager.get_command(command_name)
+    # command shape from CrawlVelocityCommand: [vz, vy, roll]
+    comp_idx = 0 if component.lower() in ("vz", "z", "lin_z") else 1 if component.lower() in ("vy", "y", "lin_y") else 2
+    comp = cmd[:, comp_idx]
+    if abs_value:
+        comp = torch.abs(comp)
+
+    speeds: torch.Tensor
+    used_nominal = False
+    if use_animation_nominal:
+        try:
+            anim = get_animation()
+            meta = anim.get("metadata", {}) or {}
+            v_nominal = float(meta.get("base_forward_velocity_mps", 0.0) or 0.0)
+        except Exception:
+            v_nominal = 0.0
+        if v_nominal > 0.0 and math.isfinite(v_nominal):
+            factor = (comp / float(v_nominal)).to(device=env._anim_playback_speed.device)  # type: ignore[attr-defined]
+            speeds = float(base_speed) * factor
+            used_nominal = True
+        else:
+            speeds = None  # type: ignore[assignment]
+    else:
+        speeds = None  # type: ignore[assignment]
+
+    if speeds is None:
+        # Fallback affine mapping
+        s = float(scale) if (scale is not None) else 0.0
+        speeds = float(base_speed) + s * comp.to(device=env._anim_playback_speed.device)  # type: ignore[attr-defined]
+
+    # Clamp and write
+    speeds = torch.clamp(speeds, min=float(min_speed), max=float(max_speed))
+    env._anim_playback_speed[env_ids] = speeds[env_ids].to(
+        device=env._anim_playback_speed.device, dtype=env._anim_playback_speed.dtype  # type: ignore[attr-defined]
+    )
+
+
 def init_animation_phase_offsets(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None = None,
@@ -480,7 +592,14 @@ def init_animation_phase_offsets(
     asset: Articulation = env.scene["robot"]
     device = asset.device
     num_envs = env.num_envs
+    # Per-env static phase offset in [0,1)
     setattr(env, "_anim_phase_offset", torch.zeros(num_envs, device=device, dtype=torch.float32))
+    # Per-env playback speed multiplier (1.0 = realtime)
+    setattr(env, "_anim_playback_speed", torch.ones(num_envs, device=device, dtype=torch.float32))
+    # Per-env accumulated phase increment (wraps in [0,1))
+    setattr(env, "_anim_phase_accum", torch.zeros(num_envs, device=device, dtype=torch.float32))
+    # Step tracking to advance accumulator once per step
+    setattr(env, "_anim_last_step", int(-1))
  # if not hasattr(env, "_anim_phase_offset"):
     #     setattr(env, "_anim_phase_offset", torch.zeros(env.num_envs, device=asset.device, dtype=torch.float32))
     
@@ -530,6 +649,9 @@ def reset_from_animation(
     # if not hasattr(env, "_anim_phase_offset"):
     #     setattr(env, "_anim_phase_offset", torch.zeros(env.num_envs, device=asset.device, dtype=torch.float32))
     env._anim_phase_offset[env_ids] = phase_offsets  # type: ignore[attr-defined]
+    # Reset phase accumulator for these envs so the episode starts cleanly
+    if hasattr(env, "_anim_phase_accum"):
+        env._anim_phase_accum[env_ids] = 0.0  # type: ignore[attr-defined]
     # env.animation_phase_offset[env_ids] = phase_offsets
     # store cycle time in seconds
     # setattr(env, "_anim_cycle_time_s", float(T) * float(anim["dt"]))
@@ -803,8 +925,8 @@ def viz_forward_velocity_world_step(
     meta = anim.get("metadata", {}) or {}
     if "base_forward_velocity_mps" not in meta or meta["base_forward_velocity_mps"] is None:
         raise RuntimeError("Animation metadata missing 'base_forward_velocity_mps' for forward-velocity viz")
-    v_target = float(meta["base_forward_velocity_mps"])  # must be > 0
-    if not np.isfinite(v_target) or v_target <= 0.0:
+    base_target = float(meta["base_forward_velocity_mps"])  # must be > 0
+    if not np.isfinite(base_target) or base_target <= 0.0:
         raise RuntimeError("'base_forward_velocity_mps' must be a finite positive float")
 
     asset: Articulation = env.scene[asset_cfg.name]
@@ -878,6 +1000,15 @@ def viz_forward_velocity_world_step(
             line_colors.append(color)
             line_sizes.append(size_head)
 
+    # Per-env desired targets scaled by playback speed (if available)
+    if not hasattr(env, "_anim_playback_speed"):
+        desired_targets = None
+    else:
+        speed = env._anim_playback_speed  # type: ignore[attr-defined]
+        if speed.dim() == 0:
+            speed = speed.view(1).expand(asset.data.root_lin_vel_w.shape[0])
+        desired_targets = (base_target * speed.to(device=asset.device, dtype=asset.data.root_lin_vel_w.dtype)).detach().cpu().numpy()
+
     # Build arrows
     base_pos_cpu = base_pos_w.detach().cpu().numpy()
     vel_w_cpu = vel_w.detach().cpu().numpy()
@@ -885,7 +1016,8 @@ def viz_forward_velocity_world_step(
         start = base_pos_cpu[i].copy()
         start[2] += float(height_offset)
         # Desired: along +X world
-        desired_vec = np.array([v_target, 0.0, 0.0], dtype=float)
+        v_des = float(desired_targets[i]) if desired_targets is not None else float(base_target)
+        desired_vec = np.array([v_des, 0.0, 0.0], dtype=float)
         _append_arrow(start, desired_vec, desired_color)
         # Actual: measured world velocity (use XY components; keep Z for 3D continuity)
         actual_vec = np.array([vel_w_cpu[i, 0], vel_w_cpu[i, 1], 0.0], dtype=float)
