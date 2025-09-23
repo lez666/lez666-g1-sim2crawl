@@ -10,7 +10,7 @@ import nanoid as nano
 
 # Experiment configuration
 TASK_NAME = "g1-crawl-proc"
-EXPERIMENT_NAME = "g1_crawl_proc_sweep_v2"  
+EXPERIMENT_NAME = "g1_crawl_proc_sweep_v4"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -20,14 +20,33 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.flat_orientation_l2.weight": [.5, 0.2, .1], #.1
-        "env.rewards.joint_deviation_all.weight": [.5, 0.2, .1] #-.1, #-.1
 
-        # "env.rewards.anim_pose_l1.weight": [-1., -0.5, 0.],
-        # "env.rewards.anim_contact_mismatch_l1.weight": [-1., -0.5, 0.],
-        # "env.rewards.anim_forward_vel.weight": [2., 1.],
-        # "env.rewards.heading_xy_align.weight": [1., 0.5],
+        "env.sim.dt": [0.005, 0.002],
     },
+
+    # Grouped parameter sets: each entry is a list of dicts. Within a list,
+    # each dict specifies a set of parameter values that must be tested together.
+    # We will take the cartesian product ACROSS groups, but NOT within a group.
+    # Example:
+    # "SWEEP_PARAM_SETS": [
+    #     [
+    #         {"env.rewards.x.weight": 0.1, "env.rewards.y.weight": 0.2},
+    #         {"env.rewards.x.weight": 3.0, "env.rewards.y.weight": 3.0},
+    #     ],
+    #     [
+    #         {"env.sim.substeps": 1, "env.sim.num_steps": 1000},
+    #         {"env.sim.substeps": 2, "env.sim.num_steps": 2000},
+    #     ]
+    # ]
+    # Notes:
+    # - Parameters that appear in any grouped set MUST NOT also appear in SWEEP_PARAMS.
+    # - All choices within a single group must set the same parameter keys.
+    "SWEEP_PARAM_SETS": [
+        [
+            {"env.rewards.action_rate_l2.weight": -4e-3, "env.rewards.dof_torques_l2.weight":-4.0e-5},
+            {"env.rewards.action_rate_l2.weight": -1e-2, "env.rewards.dof_torques_l2.weight": -1.0e-4},
+        ],
+    ],
 
 }
 # =============================================================================
@@ -97,27 +116,114 @@ def is_excluded_combination(combination):
     return False
 
 
+def _validate_and_prepare_group_sets(group_sets):
+    """Validate group sets and return list of normalized groups.
+
+    - Ensure each group is a non-empty list of dicts
+    - Ensure all dicts within a group have identical keys
+    - Return as-is after validation
+    """
+    if not group_sets:
+        return []
+    normalized = []
+    for idx, group in enumerate(group_sets):
+        if not isinstance(group, list) or len(group) == 0:
+            raise ValueError(f"SWEEP_PARAM_SETS group #{idx} must be a non-empty list of dicts")
+        keys_ref = None
+        norm_group = []
+        for choice_i, choice in enumerate(group):
+            if not isinstance(choice, dict) or len(choice) == 0:
+                raise ValueError(f"SWEEP_PARAM_SETS group #{idx} choice #{choice_i} must be a non-empty dict")
+            keys = tuple(sorted(choice.keys()))
+            if keys_ref is None:
+                keys_ref = keys
+            elif keys != keys_ref:
+                raise ValueError(
+                    f"SWEEP_PARAM_SETS group #{idx} has inconsistent keys across choices. "
+                    f"Expected {keys_ref}, got {keys}"
+                )
+            norm_group.append(choice)
+        normalized.append(norm_group)
+    return normalized
+
+
+def _assert_no_overlap_between_groups_and_params(group_sets, sweep_params):
+    if not group_sets:
+        return
+    grouped_keys = set()
+    for idx, group in enumerate(group_sets):
+        for k in group[0].keys():
+            if k in grouped_keys:
+                raise ValueError(f"Parameter '{k}' appears in multiple SWEEP_PARAM_SETS groups (group #{idx})")
+            grouped_keys.add(k)
+    overlap = grouped_keys.intersection(set(sweep_params.keys()))
+    if overlap:
+        raise ValueError(
+            "Parameters cannot appear in both SWEEP_PARAM_SETS and SWEEP_PARAMS: " + ", ".join(sorted(overlap))
+        )
+
+
+def _cartesian_product_of_dicts(dicts_list):
+    """Cartesian product over a list of lists of dicts, merging dicts per pick.
+
+    Input: [[{a:1},{a:2}], [{b:3},{b:4}]] -> [{a:1,b:3},{a:1,b:4},{a:2,b:3},{a:2,b:4}]
+    """
+    if not dicts_list:
+        return [{}]
+    result = [dict()]
+    for choices in dicts_list:
+        new_result = []
+        for base in result:
+            for choice in choices:
+                merged = dict(base)
+                # Fail loudly on key conflict
+                for k, v in choice.items():
+                    if k in merged and merged[k] != v:
+                        raise ValueError(f"Conflicting assignments for '{k}': {merged[k]} vs {v}")
+                    merged[k] = v
+                new_result.append(merged)
+        result = new_result
+    return result
+
+
 def generate_parameter_combinations():
-    """Generate all combinations of sweep parameters."""
-    sweep_params = SWEEP_CONFIG["SWEEP_PARAMS"]
-    
-    if not sweep_params:
-        return [{}]  # Return single empty combination if no sweep params
-    
-    # Get parameter names and their possible values
-    param_names = list(sweep_params.keys())
-    param_values = list(sweep_params.values())
-    
-    # Generate all combinations
-    combinations = []
-    for values in itertools.product(*param_values):
-        param_dict = dict(zip(param_names, values))
-        # Apply exclusion rules
-        if is_excluded_combination(param_dict):
-            continue
-        combinations.append(param_dict)
-    
-    return combinations
+    """Generate all combinations from SWEEP_PARAMS and SWEEP_PARAM_SETS with validation."""
+    sweep_params = SWEEP_CONFIG.get("SWEEP_PARAMS", {})
+    group_sets_raw = SWEEP_CONFIG.get("SWEEP_PARAM_SETS", [])
+
+    # Validate grouped sets and overlaps
+    group_sets = _validate_and_prepare_group_sets(group_sets_raw)
+    _assert_no_overlap_between_groups_and_params(group_sets, sweep_params)
+
+    # Build cartesian of independent params
+    independent_param_combos = [{}]
+    if sweep_params:
+        param_names = list(sweep_params.keys())
+        param_values = list(sweep_params.values())
+        independent_param_combos = [dict(zip(param_names, values)) for values in itertools.product(*param_values)]
+
+    # Build cartesian across groups (each group is pick-one-of-these dicts)
+    grouped_combos = _cartesian_product_of_dicts(group_sets) if group_sets else [{}]
+
+    # Merge independent with grouped; fail loudly on conflicts
+    all_combos = []
+    for a in independent_param_combos:
+        for b in grouped_combos:
+            merged = dict(a)
+            conflict_keys = [k for k in b.keys() if k in merged and merged[k] != b[k]]
+            if conflict_keys:
+                raise ValueError(
+                    "Conflicts between SWEEP_PARAMS and SWEEP_PARAM_SETS: " + ", ".join(conflict_keys)
+                )
+            merged.update(b)
+            if not is_excluded_combination(merged):
+                all_combos.append(merged)
+
+    # If neither independent nor grouped provided, still return one empty combo
+    if not all_combos:
+        if not sweep_params and not group_sets:
+            return [{}]
+    return all_combos
 
 def build_train_args(sweep_params):
     """Build training arguments from sweep and fixed parameters."""
@@ -245,6 +351,13 @@ def main():
     print(f"\nSweep parameters:")
     for param_name, param_values in SWEEP_CONFIG["SWEEP_PARAMS"].items():
         print(f"  {param_name}: {param_values}")
+    if SWEEP_CONFIG.get("SWEEP_PARAM_SETS"):
+        print(f"\nGrouped parameter sets:")
+        for gi, group in enumerate(SWEEP_CONFIG["SWEEP_PARAM_SETS"]):
+            print(f"  Group #{gi} (pick one of):")
+            for choice in group:
+                pretty = ", ".join(f"{k}={v}" for k, v in choice.items())
+                print(f"    - {{ {pretty} }}")
     
     for i, combination in enumerate(parameter_combinations):
         # Skip runs before START_FROM_RUN
@@ -359,6 +472,11 @@ def main():
             f.write("python sweep_analyzer.py\n")
         print(f"   You can manually run analysis later with:")
         print(f"   python sweep_analyzer.py")
+    # Always write and print the absolute path to the sweep output directory when done
+    abs_sweep_output_dir = os.path.abspath(sweep_output_dir)
+    with open(log_file, 'a') as f:
+        f.write(f"\nFull sweep output directory: {abs_sweep_output_dir}\n")
+    print(f"\n📁 Full sweep output directory: {abs_sweep_output_dir}")
 
 if __name__ == "__main__":
     main() 

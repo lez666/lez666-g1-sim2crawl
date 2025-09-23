@@ -219,29 +219,34 @@ class EventCfg:
     )
     # reset
     # Replace uniform base reset with animation-based reset
+    # reset_base = EventTerm(
+    #     func=mdp.reset_from_animation,
+    #     mode="reset",
+    #     params={
+    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
+    #         "pose_noise_range": {
+    #             "x": (-0.05, 0.05),
+    #             "y": (-0.05, 0.05),
+    #             "z": (-0.05, 0.2),
+    #             "roll": (0.0, 0.0),
+    #             "pitch": (0.0, 0.0),
+    #             "yaw": (-0.10, 0.10),
+    #         },
+    #         # Small random root velocity at reset (linear m/s, angular rad/s)
+    #         "velocity_noise_range": {
+    #             "x": (-0.20, 0.20),
+    #             "y": (-0.20, 0.20),
+    #             "z": (-0.3, 0.3),
+    #             "roll": (0.0, 0.0),
+    #             "pitch": (0.0, 0.0),
+    #             "yaw": (-0.30, 0.30),
+    #         },
+    #     },
+    # )
     reset_base = EventTerm(
         func=mdp.reset_from_animation,
         mode="reset",
-        params={
-            # Small random offsets on root pose at reset (position in meters, angles in radians)
-            "pose_noise_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
-                "z": (-0.05, 0.2),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (-0.10, 0.10),
-            },
-            # Small random root velocity at reset (linear m/s, angular rad/s)
-            "velocity_noise_range": {
-                "x": (-0.20, 0.20),
-                "y": (-0.20, 0.20),
-                "z": (-0.3, 0.3),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (-0.30, 0.30),
-            },
-        },
+        params={},
     )
 
 
