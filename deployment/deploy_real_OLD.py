@@ -9,7 +9,6 @@ from utils import (
     Kd,
     G1_NUM_MOTOR,
     default_pos,
-    crawl_angles,
     default_angles_config,
     get_gravity_orientation,
     action_scale,
@@ -33,6 +32,7 @@ from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitiali
 import time
 import numpy as np
 import torch
+from keyboard_reader import KeyboardController
 
 NETWORK_CARD_NAME = 'enxc8a362b43bfd'
 POLICY_PATH = "policy.pt"
@@ -58,6 +58,15 @@ class TorchPolicy:
             action_tensor = self._policy(obs_tensor)
             pytorch_pred = action_tensor.numpy()  # Actions in PyTorch model joint order
 
+        # Zero out arm control similar to training logic (in PyTorch order)
+        # In PyTorch order, arm joints are:
+        # 9-10: shoulders, 13-14: shoulder rolls, 17-18: shoulder yaws, 19-20: elbows, 21-22: wrists
+        ZERO_ARM_CONTROL = False  # Set this flag as needed
+        if ZERO_ARM_CONTROL:
+            # Arm joint indices in PyTorch order
+            arm_indices = [9, 10, 13, 14, 17, 18, 19, 20, 21, 22]  # All arm joints
+            pytorch_pred[arm_indices] = 0.0
+
         return pytorch_pred
 
 
@@ -76,7 +85,11 @@ class Controller:
         self._joint_lower_bounds = joint_limits[:, 0]
         self._joint_upper_bounds = joint_limits[:, 1]
 
-        # Static velocity command placeholder; keyboard controls removed
+        self._controller = KeyboardController(
+            vel_scale_x=1.0,
+            vel_scale_y=1.0,
+            vel_scale_rot=1.0,
+        )
 
         self.control_dt = 0.02
 
@@ -91,7 +104,6 @@ class Controller:
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self.LowStateHandler, 10)
         self.default_pos_array = np.array(default_pos)
-        self.crawl_angles_array = np.array(crawl_angles)
         self.default_angles_array = np.array(default_angles_config)
 
         # wait for the subscriber to receive data
@@ -112,21 +124,6 @@ class Controller:
                 create_zero_cmd(self.low_cmd)
                 self.send_cmd(self.low_cmd)
         print("Zero torque state confirmed. Proceeding...")
-
-    def emergency_zero_torque(self, nbi=None):
-        print("EMERGENCY: Zero torque engaged. Press Enter to resume...")
-        if nbi is None:
-            with NonBlockingInput() as local_nbi:
-                while not local_nbi.check_key('\n'):
-                    create_zero_cmd(self.low_cmd)
-                    self.send_cmd(self.low_cmd)
-                    time.sleep(self.control_dt)
-        else:
-            while not nbi.check_key('\n'):
-                create_zero_cmd(self.low_cmd)
-                self.send_cmd(self.low_cmd)
-                time.sleep(self.control_dt)
-        print("Resuming...")
 
     def LowStateHandler(self, msg: LowState_):
         self.low_state = msg
@@ -162,46 +159,11 @@ class Controller:
             self.send_cmd(self.low_cmd)
             time.sleep(self.control_dt)
 
-    def move_to_pose(self, target_pose: np.ndarray, total_time: float = 2.0):
-        print("Moving to target pose.")
-        num_step = int(total_time / self.control_dt)
-
-        init_dof_pos = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
-        for i in range(G1_NUM_MOTOR):
-            init_dof_pos[i] = self.low_state.motor_state[joint2motor_idx[i]].q
-
-        with NonBlockingInput() as nbi:
-            for i in range(num_step):
-                # Emergency stop hotkey
-                if nbi.check_key('z'):
-                    self.emergency_zero_torque(nbi)
-                alpha = i / num_step
-                for j in range(G1_NUM_MOTOR):
-                    motor_idx = joint2motor_idx[j]
-                    target_pos = float(target_pose[j])
-                    self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * (1 - alpha) + target_pos * alpha
-                    self.low_cmd.motor_cmd[motor_idx].qd = 0
-                    self.low_cmd.motor_cmd[motor_idx].kp = Kp[j]
-                    self.low_cmd.motor_cmd[motor_idx].kd = Kd[j]
-                    self.low_cmd.motor_cmd[motor_idx].tau = 0
-                self.send_cmd(self.low_cmd)
-                time.sleep(self.control_dt)
-
-    def transition_to_crawl_pose(self, total_time: float = 2.0):
-        print("Moving to crawl pose.")
-        self.move_to_pose(self.crawl_angles_array, total_time=total_time)
-
     def default_pos_state(self):
         print("Enter default pos state.")
-        print("Press Enter to start the controller (press 'z' anytime for zero torque)...")
+        print("Press Enter to start the controller...")
         with NonBlockingInput() as nbi:
-            while True:
-                # Emergency stop hotkey
-                if nbi.check_key('z'):
-                    self.emergency_zero_torque(nbi)
-                # Continue on Enter
-                if nbi.check_key('\n'):
-                    break
+            while not nbi.check_key('\n'):  # Check for Enter key
                 # Keep sending default position commands while waiting
                 for i in range(len(joint2motor_idx)):
                     motor_idx = joint2motor_idx[i]
@@ -210,35 +172,10 @@ class Controller:
                     self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
                     self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
                     self.low_cmd.motor_cmd[motor_idx].tau = 0
+
                 self.send_cmd(self.low_cmd)
                 time.sleep(self.control_dt)
         print("Default position state confirmed. Starting controller...")
-
-    def hold_crawl_pose_until_enter(self):
-        print("Holding crawl pose. Press Enter to start the controller (press 'z' anytime for zero torque)...")
-        with NonBlockingInput() as nbi:
-            while True:
-                # Emergency stop hotkey
-                if nbi.check_key('z'):
-                    self.emergency_zero_torque(nbi)
-                # Continue on Enter
-                if nbi.check_key('\n'):
-                    break
-                for i in range(len(joint2motor_idx)):
-                    motor_idx = joint2motor_idx[i]
-                    self.low_cmd.motor_cmd[motor_idx].q = self.crawl_angles_array[i]
-                    self.low_cmd.motor_cmd[motor_idx].qd = 0
-                    self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-                    self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
-                    self.low_cmd.motor_cmd[motor_idx].tau = 0
-                self.send_cmd(self.low_cmd)
-                time.sleep(self.control_dt)
-        print("Confirmed: starting controller from crawl pose...")
-
-    def reach_and_hold_crawl_pose(self, total_time: float = 2.0):
-        """Transition to crawl pose, then hold until Enter is pressed."""
-        self.transition_to_crawl_pose(total_time=total_time)
-        self.hold_crawl_pose_until_enter()
 
     def get_obs(self) -> np.ndarray:
         """Construct observation in the format expected by the PyTorch model."""
@@ -247,7 +184,7 @@ class Controller:
         gravity = get_gravity_orientation(quat)
         
         # Get velocity commands (3 dimensions)
-        velocity_commands = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        velocity_commands = self._controller.get_command()
         
         # Get joint positions and velocities in MuJoCo order, then convert to PyTorch order
         joint_pos_mujoco = self.qj.copy()  # Already relative to default_angles_config
@@ -331,15 +268,15 @@ if __name__ == "__main__":
     # Enter the zero torque state, press Enter key to continue executing
     controller.zero_torque_state()
 
-    # Transition to and hold crawl pose until Enter
-    controller.reach_and_hold_crawl_pose(total_time=2.0)
+    # Move to the default position
+    controller.move_to_default_pos()
+
+    # Enter the default position state, press Enter key to continue executing
+    controller.default_pos_state()
 
     print("Controller running. Press 'q' to quit.")
     with NonBlockingInput() as nbi:  # Use context manager for the main loop
         while True:
-            # Emergency stop hotkey during NN control
-            if nbi.check_key('z'):
-                controller.emergency_zero_torque(nbi)
             controller.run()
             # Check for 'q' key press to exit
             if nbi.check_key('q'):

@@ -8,19 +8,19 @@ import sys
 G1_NUM_MOTOR = 23
 
 Kp = [
-    60, 60, 60, 100, 40, 40,      # legs
-    60, 60, 60, 100, 40, 40,      # legs
-    60,                   # waist
-    40, 40, 40, 40, 40,   # arms
-    40, 40, 40, 40, 40,   # arms
+    350, 200, 200, 300, 300, 150,     # legs (L: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+    350, 200, 200, 300, 300, 150,     # legs (R: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+    200,                               # waist_yaw
+    40, 40, 40, 40, 40,                # arms (L: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
+    40, 40, 40, 40, 40,                # arms (R: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
 ]
 
 Kd = [
-    1, 1, 1, 2, 1, 1,     # legs
-    1, 1, 1, 2, 1, 1,     # legs
-    1,              # waist
-    1, 1, 1, 1, 1,  # arms
-    1, 1, 1, 1, 1,    # arms
+    5, 5, 5, 10, 5, 5,    # legs (L)
+    5, 5, 5, 10, 5, 5,    # legs (R)
+    5,                    # waist_yaw
+    3, 3, 3, 3, 3,        # arms (L)
+    3, 3, 3, 3, 3,        # arms (R)
 ]
 
 default_pos = [
