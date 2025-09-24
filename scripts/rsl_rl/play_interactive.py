@@ -21,7 +21,7 @@ parser.add_argument("--video_length", type=int, default=200, help="Length of the
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate (default: 1).")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument(
     "--use_pretrained_checkpoint",
@@ -48,6 +48,7 @@ import gymnasium as gym
 import os
 import time
 import torch
+import numpy as np
 
 from rsl_rl.runners import OnPolicyRunner
 
@@ -57,6 +58,7 @@ from isaaclab.utils.dict import print_dict
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
+import isaaclab.utils.math as math_utils
 
 from isaaclab.devices import Se2Keyboard, Se2KeyboardCfg
 import isaaclab_tasks  # noqa: F401
@@ -64,6 +66,98 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 
 import g1_crawl.tasks  # noqa: F401
 
+
+try:
+    import isaacsim.util.debug_draw._debug_draw as omni_debug_draw
+    _DEBUG_DRAW_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    omni_debug_draw = None
+    _DEBUG_DRAW_AVAILABLE = False
+
+
+def _get_robot_pose(env):
+    try:
+        base_env = env.unwrapped
+    except Exception:
+        base_env = env
+    try:
+        robot = base_env.scene["robot"]
+        pos_w = robot.data.root_pos_w[0]
+        quat_w = robot.data.root_quat_w[0]
+        return pos_w, quat_w
+    except Exception:
+        return None, None
+
+
+def _viz_keyboard_command_relative_to_base(env, cmd_vals, duration: float = 0.1):
+    if not _DEBUG_DRAW_AVAILABLE:
+        return
+    try:
+        vx = float(cmd_vals[0])
+        vy = float(cmd_vals[1])
+        wz = float(cmd_vals[2])
+    except Exception:
+        return
+    pos_w, quat_w = _get_robot_pose(env)
+    if pos_w is None or quat_w is None:
+        return
+    draw = omni_debug_draw.acquire_debug_draw_interface()
+    draw.clear_lines()
+    base_pos = pos_w.detach().cpu().numpy()
+    anchor = np.array([float(base_pos[0]), float(base_pos[1]), float(base_pos[2] + 0.6)], dtype=float)
+    arrow_scale = 1.5
+    line_start_points = []
+    line_end_points = []
+    line_colors = []
+    line_sizes = []
+    # Linear velocity arrow: map teleop (v_x forward, v_y lateral) to base (z, y), then rotate to world and project to XY
+    vec_b = torch.tensor([0.0, vy, vx], device=quat_w.device, dtype=quat_w.dtype).unsqueeze(0)
+    vec_w = math_utils.quat_apply(quat_w.unsqueeze(0), vec_b).squeeze(0).detach().cpu().numpy()
+    vec_w[2] = 0.0
+    end = anchor + vec_w * arrow_scale
+    line_start_points.append([anchor[0], anchor[1], anchor[2]])
+    line_end_points.append([end[0], end[1], end[2]])
+    line_colors.append((0.1, 0.9, 0.2, 1.0))
+    line_sizes.append(4.0)
+    # Arrowhead in XY plane
+    dir2d = np.array([end[0] - anchor[0], end[1] - anchor[1]], dtype=float)
+    n2 = np.linalg.norm(dir2d)
+    if n2 > 1e-6:
+        dir2d = dir2d / n2
+        ang = np.radians(25.0)
+        ca, sa = np.cos(ang), np.sin(ang)
+        head_len = 0.3
+        h1 = np.array([-dir2d[0] * ca + dir2d[1] * sa, -dir2d[1] * ca - dir2d[0] * sa])
+        h2 = np.array([-dir2d[0] * ca - dir2d[1] * sa, -dir2d[1] * ca + dir2d[0] * sa])
+        head1 = [end[0] + h1[0] * head_len, end[1] + h1[1] * head_len, end[2]]
+        head2 = [end[0] + h2[0] * head_len, end[1] + h2[1] * head_len, end[2]]
+        line_start_points.append([end[0], end[1], end[2]])
+        line_end_points.append(head1)
+        line_colors.append((0.1, 0.9, 0.2, 1.0))
+        line_sizes.append(3.0)
+        line_start_points.append([end[0], end[1], end[2]])
+        line_end_points.append(head2)
+        line_colors.append((0.1, 0.9, 0.2, 1.0))
+        line_sizes.append(3.0)
+    # Yaw rate arrow: show a curved sense using XY arrow perpendicular to forward for sign clarity
+    # Build a small sideways vector in world aligned with base +Y
+    y_b = torch.tensor([0.0, 1.0, 0.0], device=quat_w.device, dtype=quat_w.dtype).unsqueeze(0)
+    y_w = math_utils.quat_apply(quat_w.unsqueeze(0), y_b).squeeze(0).detach().cpu().numpy()
+    y_w[2] = 0.0
+    n = np.linalg.norm(y_w[:2])
+    if n > 1e-6:
+        y_w[:2] = y_w[:2] / n
+    yaw_scale = 0.8
+    yaw_len = max(min(abs(wz) * yaw_scale, 1.5), 0.0)
+    yaw_dir = 1.0 if wz >= 0.0 else -1.0
+    off = 0.5
+    y_start = anchor + y_w * off
+    y_end = y_start + y_w * (yaw_dir * yaw_len)
+    line_start_points.append([y_start[0], y_start[1], y_start[2]])
+    line_end_points.append([y_end[0], y_end[1], y_end[2]])
+    line_colors.append((0.1, 0.9, 1.0, 1.0))
+    line_sizes.append(4.0)
+    draw.draw_lines(line_start_points, line_end_points, line_colors, line_sizes)
 
 def main():
     """Play with RSL-RL agent."""
@@ -153,7 +247,8 @@ def main():
     while simulation_app.is_running():
         start_time = time.time()
         command = teleop_interface.advance()
-        print(command)
+        # print(command)
+        _viz_keyboard_command_relative_to_base(env, command)
 
         # run everything in inference mode
         with torch.inference_mode():

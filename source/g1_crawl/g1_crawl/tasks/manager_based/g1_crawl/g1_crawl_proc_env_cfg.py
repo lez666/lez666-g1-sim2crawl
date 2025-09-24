@@ -299,9 +299,9 @@ class RewardsCfg:
         params={"command_name": "base_velocity", "std": 0.25},
     )
     track_ang_vel_x_exp = RewTerm(
-        func=mdp.track_ang_vel_x_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.25}
+        func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.25}
     )
-    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
+    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.2)
     
     
     # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
@@ -337,7 +337,6 @@ class RewardsCfg:
     #regulatorization
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-
     bellyhead_drag_penalty = RewTerm(
         func=mdp.undesired_contacts,
         weight=-5.0,
@@ -345,6 +344,18 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
                 body_names= "torso_link",
+            ),
+            "threshold": 1.0,  # in Newtons (normal force magnitude)
+        },
+    )
+
+    undesired_body_contact_penalty = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-2.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names="^(?!.*ankle_roll_link|.*wrist_link|torso_link).*",
             ),
             "threshold": 1.0,  # in Newtons (normal force magnitude)
         },
