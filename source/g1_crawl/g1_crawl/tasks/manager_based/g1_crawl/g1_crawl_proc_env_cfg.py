@@ -61,9 +61,9 @@ class G1CrawlProcSceneCfg(InteractiveSceneCfg):
     height_scanner = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
+        ray_alignment="yaw",
         pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
-        debug_vis=False,
+        debug_vis=True,
         mesh_prim_paths=["/World/ground"],
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
@@ -256,7 +256,11 @@ class EventCfg:
         interval_range_s=(5,10),
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
+@configclass
+class CurriculumCfg:
+    """Curriculum terms for the MDP."""
 
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
 # def override_value(env, env_ids, data, value, num_steps):
 #         if env.common_step_counter > num_steps:
 #             return value
@@ -308,6 +312,7 @@ class RewardsCfg:
         params={
             "target_height": 0.22,
             "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
         },
     )
 
@@ -406,7 +411,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    # curriculum: CurriculumCfg = CurriculumCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
 
 
     def __post_init__(self) -> None:
@@ -418,6 +423,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
         # simulation settings
         # self.sim.dt = 0.002
         self.sim.dt = 0.005
+        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
 
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
@@ -432,9 +438,11 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
             self.scene.contact_forces.update_period = self.sim.dt
 
         # Set terrain to plane and disable height scanning
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
-        self.scene.height_scanner = None
+        # self.scene.terrain.terrain_type = "plane"
+        # self.scene.terrain.terrain_generator = None
+        # self.scene.height_scanner = None
+
+        if getattr(self.curriculum, "terrain_levels", None) is not None:
+            if self.scene.terrain.terrain_generator is not None:
+                self.scene.terrain.terrain_generator.curriculum = True
        
-        # Randomization
-        # self.events.base_external_force_torque.params["asset_cfg"].body_names = ["torso_link"]
