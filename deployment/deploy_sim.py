@@ -7,6 +7,10 @@ import mujoco
 import mujoco.viewer as viewer
 import numpy as np
 import torch
+import threading
+import tkinter as tk
+from dataclasses import dataclass
+from typing import Union
 from utils import (
     default_angles_config,
     init_joint_mappings,
@@ -27,7 +31,7 @@ DROP_HEIGHT_M: float = 0.5
 START_POSE_INDEX: int | None = 2  # e.g., set to 1 to start at "Pose 1"
 
 # NN control constants (simple, no args/params)
-NN_SWITCH_SEC: float = 2
+NN_SWITCH_SEC: float = 1
 NN_POLICY_PATH: Path = Path("/home/logan/Projects/g1_crawl/deployment/policy.pt")
 NN_ACTION_SCALE: float = 0.5
 NN_N_SUBSTEPS: int = 4
@@ -107,6 +111,7 @@ class TorchController:
         default_angles: np.ndarray,
         n_substeps: int,
         action_scale: float = 0.5,
+        state: Union["ControlState", None] = None,
     ) -> None:
         self._policy = torch.load(policy_path, weights_only=False)
         self._policy.eval()
@@ -117,6 +122,7 @@ class TorchController:
         print("ACTION_SCALE", self._action_scale)
         self._n_substeps = int(n_substeps)
         self._counter = 0
+        self._state = state
 
         # Initialize joint mappings once
         init_joint_mappings()
@@ -128,8 +134,15 @@ class TorchController:
         imu_xmat = data.site_xmat[model.site("imu_in_pelvis").id].reshape(3, 3)
         projected_gravity = imu_xmat.T @ world_gravity
 
-        # Fixed velocity commands [lin_vel_z, lin_vel_y, ang_vel_x]
-        velocity_commands = np.array([0.4, 0.0, 0.0], dtype=np.float32)
+        # Commanded velocities [lin_vel_z, lin_vel_y, ang_vel_x]
+        state = getattr(self, "_state", None)
+        if state is not None:
+            lin_vel_z = float(state.lin_vel_z)
+            ang_vel_x = float(state.ang_vel_x)
+        else:
+            lin_vel_z = 1.5
+            ang_vel_x = 0.0
+        velocity_commands = np.array([lin_vel_z, 0.0, ang_vel_x], dtype=np.float32)
 
         # Joint states (MuJoCo order) → PyTorch order
         joint_pos_mujoco = data.qpos[7:] - self._default_angles
@@ -165,8 +178,148 @@ class TorchController:
 
 
 
-class PosesUI:
-    pass
+@dataclass
+class ControlState:
+    mode: str = "hold"  # "hold" or "nn"
+    requested_pose_delta: int = 0
+    requested_reset: bool = False
+    action_scale: float = NN_ACTION_SCALE
+    n_substeps: int = NN_N_SUBSTEPS
+    lin_vel_z: float = 1.5  # Forward velocity
+    ang_vel_x: float = 0.0  # Angular velocity around x-axis
+    quit: bool = False
+
+
+class SimpleUI:
+    def __init__(self, state: ControlState, num_poses: int) -> None:
+        self.state = state
+        self.num_poses = int(num_poses)
+        self._root: tk.Tk | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        self._root = tk.Tk()
+        self._root.title("G1 Crawl Controls")
+
+        frm = tk.Frame(self._root)
+        frm.pack(padx=8, pady=8)
+
+        # Row 0: Pose navigation
+        tk.Button(frm, text="Prev Pose", width=12, command=lambda: self._pose_delta(-1)).grid(row=0, column=0, padx=4, pady=4)
+        tk.Button(frm, text="Next Pose", width=12, command=lambda: self._pose_delta(+1)).grid(row=0, column=1, padx=4, pady=4)
+
+        # Row 1: Mode selection
+        tk.Button(frm, text="Hold Pose", width=12, command=lambda: self._set_mode("hold")).grid(row=1, column=0, padx=4, pady=4)
+        tk.Button(frm, text="NN Control", width=12, command=lambda: self._set_mode("nn")).grid(row=1, column=1, padx=4, pady=4)
+
+        # Row 2: Reset / Quit
+        tk.Button(frm, text="Reset Drop", width=12, command=self._reset).grid(row=2, column=0, padx=4, pady=4)
+        tk.Button(frm, text="Quit", width=12, command=self._quit).grid(row=2, column=1, padx=4, pady=4)
+
+        # Row 3: Action scale slider
+        tk.Label(frm, text="Action Scale").grid(row=3, column=0, sticky="e", padx=4)
+        action_scale_var = tk.DoubleVar(value=self.state.action_scale)
+
+        def on_action_scale(val: str) -> None:
+            try:
+                self.state.action_scale = float(val)
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=0.0,
+            to=1.0,
+            resolution=0.01,
+            orient=tk.HORIZONTAL,
+            variable=action_scale_var,
+            command=on_action_scale,
+            length=220,
+        ).grid(row=3, column=1, sticky="w", padx=4)
+
+        # Row 4: Substeps slider
+        tk.Label(frm, text="Substeps").grid(row=4, column=0, sticky="e", padx=4)
+        n_substeps_var = tk.IntVar(value=self.state.n_substeps)
+
+        def on_substeps(val: str) -> None:
+            try:
+                self.state.n_substeps = max(1, int(float(val)))
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=1,
+            to=8,
+            resolution=1,
+            orient=tk.HORIZONTAL,
+            variable=n_substeps_var,
+            command=on_substeps,
+            length=220,
+        ).grid(row=4, column=1, sticky="w", padx=4)
+
+        # Row 5: Forward velocity slider
+        tk.Label(frm, text="Forward Vel").grid(row=5, column=0, sticky="e", padx=4)
+        lin_vel_z_var = tk.DoubleVar(value=self.state.lin_vel_z)
+
+        def on_lin_vel_z(val: str) -> None:
+            try:
+                self.state.lin_vel_z = float(val)
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=0,
+            to=1.5,
+            resolution=0.1,
+            orient=tk.HORIZONTAL,
+            variable=lin_vel_z_var,
+            command=on_lin_vel_z,
+            length=220,
+        ).grid(row=5, column=1, sticky="w", padx=4)
+
+        # Row 6: Angular velocity slider
+        tk.Label(frm, text="Angular Vel").grid(row=6, column=0, sticky="e", padx=4)
+        ang_vel_x_var = tk.DoubleVar(value=self.state.ang_vel_x)
+
+        def on_ang_vel_x(val: str) -> None:
+            try:
+                self.state.ang_vel_x = float(val)
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=-1.0,
+            to=1.0,
+            resolution=0.1,
+            orient=tk.HORIZONTAL,
+            variable=ang_vel_x_var,
+            command=on_ang_vel_x,
+            length=220,
+        ).grid(row=6, column=1, sticky="w", padx=4)
+
+        self._root.protocol("WM_DELETE_WINDOW", self._quit)
+        self._root.mainloop()
+
+    def _pose_delta(self, d: int) -> None:
+        self.state.requested_pose_delta += int(d)
+
+    def _set_mode(self, mode: str) -> None:
+        self.state.mode = str(mode)
+
+    def _reset(self) -> None:
+        self.state.requested_reset = True
+
+    def _quit(self) -> None:
+        self.state.quit = True
+        if self._root is not None:
+            try:
+                self._root.after(0, self._root.destroy)
+            except Exception:
+                pass
 
 
 def main() -> None:
@@ -198,9 +351,11 @@ def main() -> None:
         data.qpos[free_qpos_addr + 6] = qz
 
     # Apply the selected pose to set hinge/slide joints before first forward
+    current_pose_index = 0
     if START_POSE_INDEX is not None and len(poses) > 0:
         idx0 = max(0, min(len(poses) - 1, int(START_POSE_INDEX) - 1))
-        apply_pose(model, data, poses[idx0], free_qpos_addr, face_down_fallback=False)
+        current_pose_index = idx0
+        apply_pose(model, data, poses[current_pose_index], free_qpos_addr, face_down_fallback=False)
 
     mujoco.mj_forward(model, data)
 
@@ -222,10 +377,18 @@ def main() -> None:
     controlled_joint_ids = sorted(joint_to_actuator.keys())
 
     # Hold targets at current qpos (which reflect the applied pose) so nothing moves
-    hold_targets: dict[int, float] = {}
-    for j in controlled_joint_ids:
-        adr = model.jnt_qposadr[j]
-        hold_targets[j] = float(data.qpos[adr])
+    def compute_hold_targets() -> dict[int, float]:
+        targets: dict[int, float] = {}
+        for j in controlled_joint_ids:
+            adr = model.jnt_qposadr[j]
+            targets[j] = float(data.qpos[adr])
+        return targets
+
+    hold_targets: dict[int, float] = compute_hold_targets()
+
+    # Start simple UI in background
+    ctrl_state = ControlState(action_scale=NN_ACTION_SCALE, n_substeps=NN_N_SUBSTEPS)
+    ui = SimpleUI(state=ctrl_state, num_poses=len(poses))
 
     # Prepare NN controller and switching timer
     controller = TorchController(
@@ -233,19 +396,54 @@ def main() -> None:
         default_angles=np.array(default_angles_config, dtype=np.float32),
         n_substeps=NN_N_SUBSTEPS,
         action_scale=NN_ACTION_SCALE,
+        state=ctrl_state,
     )
     t0 = time.time()
 
     with viewer.launch_passive(model=model, data=data, show_left_ui=False, show_right_ui=False) as v:
         while v.is_running():
+            if ctrl_state.quit:
+                break
             elapsed = time.time() - t0
-            if elapsed < NN_SWITCH_SEC:
-                # Hold pose by setting actuator targets to initial qpos
+            # Process UI intents
+            if ctrl_state.requested_reset:
+                # Re-apply face-down drop (if free joint), then current pose
+                if free_qpos_addr is not None:
+                    data.qpos[free_qpos_addr + 0] = 0.0
+                    data.qpos[free_qpos_addr + 1] = 0.0
+                    data.qpos[free_qpos_addr + 2] = float(max(0.0, DROP_HEIGHT_M))
+                    qw, qx, qy, qz = rpy_to_quat(0.0, math.pi / 2.0, 0.0)
+                    data.qpos[free_qpos_addr + 3] = qw
+                    data.qpos[free_qpos_addr + 4] = qx
+                    data.qpos[free_qpos_addr + 5] = qy
+                    data.qpos[free_qpos_addr + 6] = qz
+                apply_pose(model, data, poses[current_pose_index], free_qpos_addr, face_down_fallback=False)
+                mujoco.mj_forward(model, data)
+                hold_targets = compute_hold_targets()
+                ctrl_state.requested_reset = False
+
+            if ctrl_state.requested_pose_delta != 0 and len(poses) > 0:
+                current_pose_index = (current_pose_index + ctrl_state.requested_pose_delta) % len(poses)
+                ctrl_state.requested_pose_delta = 0
+                apply_pose(model, data, poses[current_pose_index], free_qpos_addr, face_down_fallback=False)
+                mujoco.mj_forward(model, data)
+                hold_targets = compute_hold_targets()
+
+            # Sync controller params from UI
+            controller._action_scale = float(ctrl_state.action_scale)
+            controller._n_substeps = int(ctrl_state.n_substeps)
+
+            # Control mode: initial hold for NN_SWITCH_SEC unless user forces NN
+            if elapsed < NN_SWITCH_SEC and ctrl_state.mode != "nn":
+                mode = "hold"
+            else:
+                mode = ctrl_state.mode
+
+            if mode == "hold":
                 for j in controlled_joint_ids:
                     aid = joint_to_actuator[j]
                     data.ctrl[aid] = hold_targets[j]
             else:
-                # NN takes over control
                 controller.get_control(model, data)
 
             mujoco.mj_step(model, data)
