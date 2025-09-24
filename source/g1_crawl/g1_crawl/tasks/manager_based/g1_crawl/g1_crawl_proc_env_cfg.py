@@ -89,7 +89,7 @@ class CommandsCfg:
         ranges=mdp.CrawlVelocityCommandCfg.Ranges(
             heading=(0.0,0.0),
             # Crawling fields used by the command implementation
-            lin_vel_z=(0.3, 2.0),
+            lin_vel_z=(0.0, 1.5),
             lin_vel_y=(0.,0.),
             ang_vel_x=(-1.0, 1.0)
         )
@@ -253,7 +253,7 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity_with_viz,
         mode="interval",
-        interval_range_s=(1000,1000),
+        interval_range_s=(5,10),
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
 

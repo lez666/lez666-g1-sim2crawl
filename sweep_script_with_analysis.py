@@ -11,7 +11,7 @@ import nanoid as nano
 # Experiment configuration
 TASK_NAME = "g1-crawl-proc"
 EXPERIMENT_NAME = "g1_crawl_proc_sweep_v7"  
-START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
+START_FROM_RUN = 4  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
 # PARAMETER SWEEP CONFIGURATION - CENTRALIZED
