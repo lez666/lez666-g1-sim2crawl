@@ -33,6 +33,7 @@ from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitiali
 import time
 import sys
 import struct
+import argparse
 import numpy as np
 import torch
 
@@ -172,6 +173,7 @@ class Controller:
         self.control_mode = "damped"  # one of {"damped", "policy", "hold"}
         self.hold_target_pose = None  # type: np.ndarray | None
         self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0}
+        self._max_forward_speed = 1.5  # Ly -> [0, 1.5]
 
     def _rising(self, name: str, current: int) -> bool:
         was = self._prev_buttons.get(name, 0)
@@ -388,8 +390,15 @@ class Controller:
         quat = self.low_state.imu_state.quaternion
         gravity = get_gravity_orientation(quat)
         
-        # Get velocity commands (3 dimensions)
-        velocity_commands = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        # Get velocity commands from remote sticks (vx, vy, yaw_rate)
+        # Ly: forward speed in [0, 1.5], negatives mapped to 0
+        # Lx: yaw rate in [-1, 1]
+        ly = float(self.remote.Ly)
+        lx = float(self.remote.Lx)
+        ly_norm = np.clip(ly, -1.0, 1.0)
+        forward_speed = max(0.0, ly_norm) * self._max_forward_speed
+        yaw_rate = float(np.clip(lx, -1.0, 1.0))
+        velocity_commands = np.array([forward_speed, 0.0, yaw_rate], dtype=np.float32)
         
         # Get joint positions and velocities in MuJoCo order, then convert to PyTorch order
         joint_pos_mujoco = self.qj.copy()  # Already relative to default_angles_config
@@ -460,6 +469,36 @@ class Controller:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="G1 real deployment controller")
+    parser.add_argument("--print-sticks", action="store_true", help="Print remote stick/button values and exit on Select")
+    args = parser.parse_args()
+
+    if args.print_sticks:
+        print("Initializing remote monitor (stick printer)...")
+        ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
+        remote = unitreeRemoteController()
+
+        def _ls_handler(msg: LowState_):
+            try:
+                remote.parse(msg.wireless_remote)
+            except Exception:
+                pass
+
+        ls_sub = ChannelSubscriber("rt/lowstate", LowState_)
+        ls_sub.Init(_ls_handler, 10)
+        print("Printing at 10 Hz. Wiggle sticks and press Select to quit.")
+        try:
+            while True:
+                print(f"Lx={remote.Lx:.3f} Ly={remote.Ly:.3f}  Rx={remote.Rx:.3f} Ry={remote.Ry:.3f}  "
+                      f"A={remote.A} B={remote.B} X={remote.X} Y={remote.Y} L1={remote.L1} R1={remote.R1} L2={remote.L2} R2={remote.R2} Start={remote.Start} Select={remote.Select}")
+                if remote.Select == 1:
+                    print("Select pressed. Exiting.")
+                    break
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+        sys.exit(0)
+
     print("Setting up policy...")
     policy = TorchPolicy(POLICY_PATH)
     print("WARNING: Please ensure there are no obstacles around the robot while running this example.")
