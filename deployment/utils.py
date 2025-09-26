@@ -1,4 +1,4 @@
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ 
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 import numpy as np
 import select
 import tty
@@ -8,27 +8,27 @@ import sys
 G1_NUM_MOTOR = 23
 
 Kp = [
-    60, 60, 60, 100, 40, 40,      # legs
-    60, 60, 60, 100, 40, 40,      # legs
-    60,                   # waist
-    40, 40, 40, 40,  40,   # arms
-    40, 40, 40, 40,  40,   # arms
+    350, 200, 200, 300, 300, 150,     # legs (L: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+    350, 200, 200, 300, 300, 150,     # legs (R: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+    200,                               # waist_yaw
+    40, 40, 40, 40, 40,                # arms (L: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
+    40, 40, 40, 40, 40,                # arms (R: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
 ]
 
-Kd = [ 
-    1, 1, 1, 2, 1, 1,     # legs
-    1, 1, 1, 2, 1, 1,     # legs
-    1,              # waist
-    1, 1, 1, 1, 1,  # arms
-    1, 1, 1, 1, 1,    # arms 
+Kd = [
+    5, 5, 5, 10, 5, 5,    # legs (L)
+    5, 5, 5, 10, 5, 5,    # legs (R)
+    5,                    # waist_yaw
+    3, 3, 3, 3, 3,        # arms (L)
+    3, 3, 3, 3, 3,        # arms (R)
 ]
 
 default_pos = [
     -0.1, 0, 0, 0.3, -0.2, 0,
     -0.1, 0, 0, 0.3, -0.2, 0,
-    0, 
-    0.2, 0.2, 0, 1.28, 0, 
-    0.2, -0.2, 0, 1.28, 0, 
+    0,
+    0.2, 0.2, 0, 1.28, 0,
+    0.2, -0.2, 0, 1.28, 0,
 ]
 
 # Default angles based on env.yaml configuration (in MuJoCo joint order)
@@ -59,6 +59,56 @@ default_angles_config = [
     0.0,                   # RightWristRoll
 ]
 
+crawl_angles = [
+    -1.5814894736842104,
+    2.293456140350877,
+    1.2094736842105265,
+    2.098992894736842,
+    0.0,
+    -0.0,
+    -1.5814894736842104,
+    -2.293456140350877,
+    -1.2094736842105265,
+    2.098992894736842,
+    0.0,
+    0.0,
+    0.0,
+    1.1547157894736841,
+    1.9146842105263158,
+    1.1482456140350878,
+    0.0,
+    -0.0,
+    1.1547157894736841,
+    -1.9146842105263158,
+    -1.1482456140350878,
+    0.0,
+    0.0
+ ]
+
+crawl_pose_delta = [
+    0.09812063867534015,
+    -0.12454498324462815,
+    0.0010871673565939766, 
+    -0.014036981667652437, 
+    -0.194143033707865, 
+    -0.0, 0.09812063867534015, 
+    0.12454498324462815, 
+    -0.0010871673565939766, 
+    -0.014036981667652437, 
+    -0.194143033707865, 
+    0.0, 
+    0.0, 
+    -0.30313684210526315, 
+    0.33681578947368407, 
+    -0.2755789473684209, 
+    0.3124709677419355, 
+    -0.0, 
+    -0.30313684210526315, 
+    -0.33681578947368407, 
+    0.2755789473684209, 
+    0.3124709677419355, 
+    0.0
+]
 
 action_scale = 0.5
 
@@ -97,12 +147,12 @@ class G1MjxJointIndex:
 class G1PyTorchJointIndex:
     """Joint indices based on the order in your PyTorch model."""
     # Actual joint order from PyTorch training:
-    # ['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint', 'right_hip_roll_joint', 
+    # ['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint', 'right_hip_roll_joint',
     # 'left_hip_yaw_joint', 'right_hip_yaw_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint', 'right_shoulder_pitch_joint',
-    # 'left_ankle_pitch_joint', 'right_ankle_pitch_joint', 'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 
-    # 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint', 
+    # 'left_ankle_pitch_joint', 'right_ankle_pitch_joint', 'left_shoulder_roll_joint', 'right_shoulder_roll_joint',
+    # 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint',
     # 'left_elbow_joint', 'right_elbow_joint', 'left_wrist_roll_joint', 'right_wrist_roll_joint']
-    
+
     LeftHipPitch = 0       # left_hip_pitch_joint
     RightHipPitch = 1      # right_hip_pitch_joint
     WaistYaw = 2           # waist_yaw_joint
@@ -113,11 +163,11 @@ class G1PyTorchJointIndex:
     LeftKnee = 7           # left_knee_joint
     RightKnee = 8          # right_knee_joint
     LeftShoulderPitch = 9  # left_shoulder_pitch_joint
-    RightShoulderPitch = 10 # right_shoulder_pitch_joint
+    RightShoulderPitch = 10  # right_shoulder_pitch_joint
     LeftAnklePitch = 11    # left_ankle_pitch_joint
     RightAnklePitch = 12   # right_ankle_pitch_joint
     LeftShoulderRoll = 13  # left_shoulder_roll_joint
-    RightShoulderRoll = 14 # right_shoulder_roll_joint
+    RightShoulderRoll = 14  # right_shoulder_roll_joint
     LeftAnkleRoll = 15     # left_ankle_roll_joint
     RightAnkleRoll = 16    # right_ankle_roll_joint
     LeftShoulderYaw = 17   # left_shoulder_yaw_joint
@@ -140,12 +190,12 @@ pytorch2mujoco_idx = [
     G1MjxJointIndex.RightHipYaw,       # 6: right_hip_yaw_joint -> RightHipYaw (8)
     G1MjxJointIndex.LeftKnee,          # 7: left_knee_joint -> LeftKnee (3)
     G1MjxJointIndex.RightKnee,         # 8: right_knee_joint -> RightKnee (9)
-    G1MjxJointIndex.LeftShoulderPitch, # 9: left_shoulder_pitch_joint -> LeftShoulderPitch (13)
-    G1MjxJointIndex.RightShoulderPitch,# 10: right_shoulder_pitch_joint -> RightShoulderPitch (18)
+    G1MjxJointIndex.LeftShoulderPitch,  # 9: left_shoulder_pitch_joint -> LeftShoulderPitch (13)
+    G1MjxJointIndex.RightShoulderPitch,  # 10: right_shoulder_pitch_joint -> RightShoulderPitch (18)
     G1MjxJointIndex.LeftAnklePitch,    # 11: left_ankle_pitch_joint -> LeftAnklePitch (4)
     G1MjxJointIndex.RightAnklePitch,   # 12: right_ankle_pitch_joint -> RightAnklePitch (10)
     G1MjxJointIndex.LeftShoulderRoll,  # 13: left_shoulder_roll_joint -> LeftShoulderRoll (14)
-    G1MjxJointIndex.RightShoulderRoll, # 14: right_shoulder_roll_joint -> RightShoulderRoll (19)
+    G1MjxJointIndex.RightShoulderRoll,  # 14: right_shoulder_roll_joint -> RightShoulderRoll (19)
     G1MjxJointIndex.LeftAnkleRoll,     # 15: left_ankle_roll_joint -> LeftAnkleRoll (5)
     G1MjxJointIndex.RightAnkleRoll,    # 16: right_ankle_roll_joint -> RightAnkleRoll (11)
     G1MjxJointIndex.LeftShoulderYaw,   # 17: left_shoulder_yaw_joint -> LeftShoulderYaw (15)
@@ -195,20 +245,21 @@ joint2motor_idx = [
     7,  # RightHipRoll
     8,  # RightHipYaw
     9,  # RightKnee
-    10, # RightAnklePitch
-    11, # RightAnkleRoll
-    12, # WaistYaw
-    15, # LeftShoulderPitch (skips WaistRoll=13, WaistPitch=14)
-    16, # LeftShoulderRoll
-    17, # LeftShoulderYaw
-    18, # LeftElbow
-    19, # LeftWristRoll (skips LeftWristPitch=20, LeftWristYaw=21)
-    22, # RightShoulderPitch
-    23, # RightShoulderRoll
-    24, # RightShoulderYaw
-    25, # RightElbow
-    26, # RightWristRoll (skips RightWristPitch=27, RightWristYaw=28)
+    10,  # RightAnklePitch
+    11,  # RightAnkleRoll
+    12,  # WaistYaw
+    15,  # LeftShoulderPitch (skips WaistRoll=13, WaistPitch=14)
+    16,  # LeftShoulderRoll
+    17,  # LeftShoulderYaw
+    18,  # LeftElbow
+    19,  # LeftWristRoll (skips LeftWristPitch=20, LeftWristYaw=21)
+    22,  # RightShoulderPitch
+    23,  # RightShoulderRoll
+    24,  # RightShoulderYaw
+    25,  # RightElbow
+    26,  # RightWristRoll (skips RightWristPitch=27, RightWristYaw=28)
 ]
+
 
 class MotorMode:
     PR = 0  # Series Control for Pitch/Roll Joints
@@ -227,7 +278,8 @@ def init_cmd_hg(cmd: LowCmd_, mode_machine: int, mode_pr: int):
         cmd.motor_cmd[i].kd = 0
         cmd.motor_cmd[i].tau = 0
 
-def create_damping_cmd(cmd:  LowCmd_):
+
+def create_damping_cmd(cmd: LowCmd_):
     size = len(cmd.motor_cmd)
     for i in range(size):
         cmd.motor_cmd[i].q = 0
@@ -237,7 +289,7 @@ def create_damping_cmd(cmd:  LowCmd_):
         cmd.motor_cmd[i].tau = 0
 
 
-def create_zero_cmd(cmd:LowCmd_):
+def create_zero_cmd(cmd: LowCmd_):
     size = len(cmd.motor_cmd)
     for i in range(size):
         cmd.motor_cmd[i].q = 0
@@ -245,6 +297,7 @@ def create_zero_cmd(cmd:LowCmd_):
         cmd.motor_cmd[i].kp = 0
         cmd.motor_cmd[i].kd = 0
         cmd.motor_cmd[i].tau = 0
+
 
 def get_gravity_orientation(quaternion):
     qw = quaternion[0]
@@ -271,17 +324,17 @@ class NonBlockingInput:
         except termios.error as e:
             # Fallback if not a tty (e.g., running in certain IDEs/environments)
             print(f"Warning: Could not set raw mode: {e}. Key detection might not work.", file=sys.stderr)
-            self.old_settings = None # Indicate failure
+            self.old_settings = None  # Indicate failure
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.old_settings:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
-        print("\nRestored terminal settings.") # Optional: provide feedback
+        print("\nRestored terminal settings.")  # Optional: provide feedback
 
     def check_key(self, key='\n'):
         """Check if a specific key is pressed without blocking."""
-        if not self.old_settings: # If raw mode failed, don't check
+        if not self.old_settings:  # If raw mode failed, don't check
             return False
         if select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
             ch = sys.stdin.read(1)
@@ -289,6 +342,7 @@ class NonBlockingInput:
             return ch == (key if key != '\n' else '\r')
         return False
 # -----------------------------------------------------
+
 
 RESTRICTED_JOINT_RANGE = (
     # Left leg.

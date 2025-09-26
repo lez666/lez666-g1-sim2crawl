@@ -9,6 +9,7 @@ from utils import (
     Kd,
     G1_NUM_MOTOR,
     default_pos,
+    crawl_angles,
     default_angles_config,
     get_gravity_orientation,
     action_scale,
@@ -30,12 +31,14 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
 import time
+import sys
+import struct
+import argparse
 import numpy as np
 import torch
-from keyboard_reader import KeyboardController
 
 NETWORK_CARD_NAME = 'enxc8a362b43bfd'
-POLICY_PATH = "policy.pt"
+POLICY_PATH = "/home/logan/Projects/g1_crawl/deployment/policy.pt"
 
 
 
@@ -58,16 +61,70 @@ class TorchPolicy:
             action_tensor = self._policy(obs_tensor)
             pytorch_pred = action_tensor.numpy()  # Actions in PyTorch model joint order
 
-        # Zero out arm control similar to training logic (in PyTorch order)
-        # In PyTorch order, arm joints are:
-        # 9-10: shoulders, 13-14: shoulder rolls, 17-18: shoulder yaws, 19-20: elbows, 21-22: wrists
-        ZERO_ARM_CONTROL = False  # Set this flag as needed
-        if ZERO_ARM_CONTROL:
-            # Arm joint indices in PyTorch order
-            arm_indices = [9, 10, 13, 14, 17, 18, 19, 20, 21, 22]  # All arm joints
-            pytorch_pred[arm_indices] = 0.0
-
         return pytorch_pred
+
+
+class unitreeRemoteController:
+    def __init__(self):
+        self.Lx = 0.0
+        self.Rx = 0.0
+        self.Ry = 0.0
+        self.Ly = 0.0
+        self.L1 = 0
+        self.L2 = 0
+        self.R1 = 0
+        self.R2 = 0
+        self.A = 0
+        self.B = 0
+        self.X = 0
+        self.Y = 0
+        self.Up = 0
+        self.Down = 0
+        self.Left = 0
+        self.Right = 0
+        self.Select = 0
+        self.F1 = 0
+        self.F3 = 0
+        self.Start = 0
+
+    def parse_botton(self, data1: int, data2: int):
+        self.R1 = (data1 >> 0) & 1
+        self.L1 = (data1 >> 1) & 1
+        self.Start = (data1 >> 2) & 1
+        self.Select = (data1 >> 3) & 1
+        self.R2 = (data1 >> 4) & 1
+        self.L2 = (data1 >> 5) & 1
+        self.F1 = (data1 >> 6) & 1
+        self.F3 = (data1 >> 7) & 1
+        self.A = (data2 >> 0) & 1
+        self.B = (data2 >> 1) & 1
+        self.X = (data2 >> 2) & 1
+        self.Y = (data2 >> 3) & 1
+        self.Up = (data2 >> 4) & 1
+        self.Right = (data2 >> 5) & 1
+        self.Down = (data2 >> 6) & 1
+        self.Left = (data2 >> 7) & 1
+
+    def parse_key(self, data: bytes):
+        lx_offset = 4
+        self.Lx = struct.unpack('<f', data[lx_offset:lx_offset + 4])[0]
+        rx_offset = 8
+        self.Rx = struct.unpack('<f', data[rx_offset:rx_offset + 4])[0]
+        ry_offset = 12
+        self.Ry = struct.unpack('<f', data[ry_offset:ry_offset + 4])[0]
+        ly_offset = 20
+        self.Ly = struct.unpack('<f', data[ly_offset:ly_offset + 4])[0]
+
+    def parse(self, remoteData: bytes):
+        if remoteData is None:
+            return
+        try:
+            # Expecting a bytes-like object
+            self.parse_key(remoteData)
+            self.parse_botton(remoteData[2], remoteData[3])
+        except Exception:
+            # Fail quietly, keep previous state
+            pass
 
 
 class Controller:
@@ -85,11 +142,7 @@ class Controller:
         self._joint_lower_bounds = joint_limits[:, 0]
         self._joint_upper_bounds = joint_limits[:, 1]
 
-        self._controller = KeyboardController(
-            vel_scale_x=1.0,
-            vel_scale_y=1.0,
-            vel_scale_rot=1.0,
-        )
+        # Static velocity command placeholder; keyboard controls removed
 
         self.control_dt = 0.02
 
@@ -104,7 +157,11 @@ class Controller:
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self.LowStateHandler, 10)
         self.default_pos_array = np.array(default_pos)
+        self.crawl_angles_array = np.array(crawl_angles)
         self.default_angles_array = np.array(default_angles_config)
+
+        # Remote controller state
+        self.remote = unitreeRemoteController()
 
         # wait for the subscriber to receive data
         self.wait_for_low_state()
@@ -112,22 +169,102 @@ class Controller:
         # Initialize the command msg
         init_cmd_hg(self.low_cmd, self.mode_machine_, self.mode_pr_)
 
+        # Unified control state
+        self.control_mode = "damped"  # one of {"damped", "policy", "hold"}
+        self.hold_target_pose = None  # type: np.ndarray | None
+        self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0}
+        self._max_forward_speed = 1.5  # Ly -> [0, 1.5]
+
+    def _rising(self, name: str, current: int) -> bool:
+        was = self._prev_buttons.get(name, 0)
+        self._prev_buttons[name] = current
+        return current == 1 and was == 0
+
+    def _send_hold_command(self):
+        if self.hold_target_pose is None:
+            return
+        for i in range(len(joint2motor_idx)):
+            motor_idx = joint2motor_idx[i]
+            self.low_cmd.motor_cmd[motor_idx].q = float(self.hold_target_pose[i])
+            self.low_cmd.motor_cmd[motor_idx].qd = 0
+            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].tau = 0
+        self.send_cmd(self.low_cmd)
+
+    def set_hold_pose(self, target_pose: np.ndarray, total_time: float = 2.0):
+        self.move_to_pose(target_pose, total_time=total_time)
+        self.hold_target_pose = target_pose.copy()
+        self.control_mode = "hold"
+
+    def process_global_buttons(self):
+        # Select: immediate quit
+        if self._rising("Select", self.remote.Select):
+            print("Select pressed: Quitting...")
+            sys.exit(0)
+        # Y: Damped mode
+        if self._rising("Y", self.remote.Y):
+            print("Y pressed: Entering damped mode.")
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+        # X: Neural network control
+        if self._rising("X", self.remote.X):
+            print("X pressed: Entering neural network control mode.")
+            self.control_mode = "policy"
+            self.hold_target_pose = None
+        # A: Lerp to crawl pose and hold
+        if self._rising("A", self.remote.A):
+            print("A pressed: Moving to set pose and holding.")
+            self.set_hold_pose(self.crawl_angles_array, total_time=2.0)
+        # B: Lerp to default pose and hold
+        if self._rising("B", self.remote.B):
+            print("B pressed: Moving to default position and holding.")
+            self.set_hold_pose(self.default_pos_array, total_time=2.0)
+
     def send_cmd(self, cmd: LowCmd_):
         cmd.crc = CRC().Crc(cmd)
         self.lowcmd_publisher_.Write(cmd)
 
     def zero_torque_state(self):
         print("Enter zero torque state.")
-        print("Press Enter to continue...")
-        with NonBlockingInput() as nbi:
-            while not nbi.check_key('\n'):
-                create_zero_cmd(self.low_cmd)
-                self.send_cmd(self.low_cmd)
-        print("Zero torque state confirmed. Proceeding...")
+        print("Press A on remote to continue; B for EMERGENCY STOP (damped, then A to quit); Y to return to default position.")
+        while True:
+            if self.remote.B == 1:
+                self.emergency_damped_and_confirm_quit()
+            if self.remote.Y == 1:
+                print("Returning to default position (Y pressed)...")
+                self.move_to_default_pos()
+            if self.remote.A == 1:
+                print("Zero torque state confirmed. Proceeding...")
+                break
+            create_zero_cmd(self.low_cmd)
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.control_dt)
+
+    def emergency_damped_and_confirm_quit(self):
+        print("EMERGENCY: Damped stop engaged.")
+        print("Press A on remote to CONFIRM QUIT. Robot will remain damped until confirmation. Press Y to return to default position.")
+        while True:
+            create_damping_cmd(self.low_cmd)
+            self.send_cmd(self.low_cmd)
+            # Optional: go back to default position while in damped stop
+            if self.remote.Y == 1:
+                print("Returning to default position (Y pressed) while damped...")
+                self.move_to_default_pos()
+            if self.remote.A == 1:
+                break
+            time.sleep(self.control_dt)
+        print("Confirmed. Exiting now.")
+        sys.exit(0)
 
     def LowStateHandler(self, msg: LowState_):
         self.low_state = msg
         self.mode_machine_ = self.low_state.mode_machine
+        # Update remote controller state
+        try:
+            self.remote.parse(self.low_state.wireless_remote)
+        except Exception:
+            pass
 
     def wait_for_low_state(self):
         while self.low_state.tick == 0:
@@ -159,23 +296,93 @@ class Controller:
             self.send_cmd(self.low_cmd)
             time.sleep(self.control_dt)
 
+    def move_to_pose(self, target_pose: np.ndarray, total_time: float = 2.0):
+        print("Moving to target pose.")
+        num_step = int(total_time / self.control_dt)
+
+        init_dof_pos = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+        for i in range(G1_NUM_MOTOR):
+            init_dof_pos[i] = self.low_state.motor_state[joint2motor_idx[i]].q
+
+        for i in range(num_step):
+            # Allow global button mapping to interrupt motion (avoid recursive A/B during move)
+            if self.remote.Select == 1:
+                print("Select pressed during move: Quitting...")
+                sys.exit(0)
+            if self.remote.Y == 1:
+                print("Y pressed during move: Switching to damped mode.")
+                self.control_mode = "damped"
+                self.hold_target_pose = None
+                return
+            if self.remote.X == 1:
+                print("X pressed during move: Switching to neural network mode.")
+                self.control_mode = "policy"
+                self.hold_target_pose = None
+                return
+
+            alpha = i / num_step
+            for j in range(G1_NUM_MOTOR):
+                motor_idx = joint2motor_idx[j]
+                target_pos = float(target_pose[j])
+                self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * (1 - alpha) + target_pos * alpha
+                self.low_cmd.motor_cmd[motor_idx].qd = 0
+                self.low_cmd.motor_cmd[motor_idx].kp = Kp[j]
+                self.low_cmd.motor_cmd[motor_idx].kd = Kd[j]
+                self.low_cmd.motor_cmd[motor_idx].tau = 0
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.control_dt)
+
+    def transition_to_crawl_pose(self, total_time: float = 2.0):
+        print("Moving to crawl pose.")
+        self.move_to_pose(self.crawl_angles_array, total_time=total_time)
+
     def default_pos_state(self):
         print("Enter default pos state.")
-        print("Press Enter to start the controller...")
-        with NonBlockingInput() as nbi:
-            while not nbi.check_key('\n'):  # Check for Enter key
-                # Keep sending default position commands while waiting
-                for i in range(len(joint2motor_idx)):
-                    motor_idx = joint2motor_idx[i]
-                    self.low_cmd.motor_cmd[motor_idx].q = default_pos[i]
-                    self.low_cmd.motor_cmd[motor_idx].qd = 0
-                    self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-                    self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
-                    self.low_cmd.motor_cmd[motor_idx].tau = 0
-
-                self.send_cmd(self.low_cmd)
-                time.sleep(self.control_dt)
+        print("Press A to start; B for EMERGENCY STOP (damped, then A to quit); Y to return to default position.")
+        while True:
+            if self.remote.B == 1:
+                self.emergency_damped_and_confirm_quit()
+            if self.remote.Y == 1:
+                print("Returning to default position (Y pressed)...")
+                self.move_to_default_pos()
+            if self.remote.A == 1:
+                break
+            for i in range(len(joint2motor_idx)):
+                motor_idx = joint2motor_idx[i]
+                self.low_cmd.motor_cmd[motor_idx].q = default_pos[i]
+                self.low_cmd.motor_cmd[motor_idx].qd = 0
+                self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
+                self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+                self.low_cmd.motor_cmd[motor_idx].tau = 0
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.control_dt)
         print("Default position state confirmed. Starting controller...")
+
+    def hold_crawl_pose_until_remote_A(self):
+        print("Holding crawl pose. Press A to start; B for EMERGENCY STOP (damped, then A to quit); Y to return to default position.")
+        while True:
+            if self.remote.B == 1:
+                self.emergency_damped_and_confirm_quit()
+            if self.remote.Y == 1:
+                print("Returning to default position (Y pressed)...")
+                self.move_to_default_pos()
+            if self.remote.A == 1:
+                break
+            for i in range(len(joint2motor_idx)):
+                motor_idx = joint2motor_idx[i]
+                self.low_cmd.motor_cmd[motor_idx].q = self.crawl_angles_array[i]
+                self.low_cmd.motor_cmd[motor_idx].qd = 0
+                self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
+                self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+                self.low_cmd.motor_cmd[motor_idx].tau = 0
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.control_dt)
+        print("Confirmed: starting controller from crawl pose...")
+
+    def reach_and_hold_crawl_pose(self, total_time: float = 2.0):
+        """Transition to crawl pose, then hold until remote A is pressed."""
+        self.transition_to_crawl_pose(total_time=total_time)
+        self.hold_crawl_pose_until_remote_A()
 
     def get_obs(self) -> np.ndarray:
         """Construct observation in the format expected by the PyTorch model."""
@@ -183,8 +390,15 @@ class Controller:
         quat = self.low_state.imu_state.quaternion
         gravity = get_gravity_orientation(quat)
         
-        # Get velocity commands (3 dimensions)
-        velocity_commands = self._controller.get_command()
+        # Get velocity commands from remote sticks (vx, vy, yaw_rate)
+        # Ly: forward speed in [0, 1.5], negatives mapped to 0
+        # Lx: yaw rate in [-1, 1]
+        ly = float(self.remote.Ly)
+        lx = float(self.remote.Lx)
+        ly_norm = np.clip(ly, -1.0, 1.0)
+        forward_speed = max(0.0, ly_norm) * self._max_forward_speed
+        yaw_rate = float(np.clip(lx, -1.0, 1.0))
+        velocity_commands = np.array([forward_speed, 0.0, yaw_rate], dtype=np.float32)
         
         # Get joint positions and velocities in MuJoCo order, then convert to PyTorch order
         joint_pos_mujoco = self.qj.copy()  # Already relative to default_angles_config
@@ -255,38 +469,63 @@ class Controller:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="G1 real deployment controller")
+    parser.add_argument("--print-sticks", action="store_true", help="Print remote stick/button values and exit on Select")
+    args = parser.parse_args()
+
+    if args.print_sticks:
+        print("Initializing remote monitor (stick printer)...")
+        ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
+        remote = unitreeRemoteController()
+
+        def _ls_handler(msg: LowState_):
+            try:
+                remote.parse(msg.wireless_remote)
+            except Exception:
+                pass
+
+        ls_sub = ChannelSubscriber("rt/lowstate", LowState_)
+        ls_sub.Init(_ls_handler, 10)
+        print("Printing at 10 Hz. Wiggle sticks and press Select to quit.")
+        try:
+            while True:
+                print(f"Lx={remote.Lx:.3f} Ly={remote.Ly:.3f}  Rx={remote.Rx:.3f} Ry={remote.Ry:.3f}  "
+                      f"A={remote.A} B={remote.B} X={remote.X} Y={remote.Y} L1={remote.L1} R1={remote.R1} L2={remote.L2} R2={remote.R2} Start={remote.Start} Select={remote.Select}")
+                if remote.Select == 1:
+                    print("Select pressed. Exiting.")
+                    break
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+        sys.exit(0)
+
     print("Setting up policy...")
     policy = TorchPolicy(POLICY_PATH)
     print("WARNING: Please ensure there are no obstacles around the robot while running this example.")
-    # Initial prompt doesn't need non-blocking
-    input("Press Enter to acknowledge warning and proceed...")
+    print("Controls (always active):")
+    print("  A: Move to crawl pose and HOLD")
+    print("  B: Move to DEFAULT pose and HOLD")
+    print("  X: Neural network CONTROL (policy)")
+    print("  Y: DAMPED mode")
+    print("  Select: QUIT immediately")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
     controller = Controller(policy)
 
-    # Enter the zero torque state, press Enter key to continue executing
-    controller.zero_torque_state()
+    print("Controller ready. Use the buttons anytime as listed above.")
+    while True:
+        controller.process_global_buttons()
 
-    # Move to the default position
-    controller.move_to_default_pos()
-
-    # Enter the default position state, press Enter key to continue executing
-    controller.default_pos_state()
-
-    print("Controller running. Press 'q' to quit.")
-    with NonBlockingInput() as nbi:  # Use context manager for the main loop
-        while True:
+        if controller.control_mode == "policy":
             controller.run()
-            # Check for 'q' key press to exit
-            if nbi.check_key('q'):
-                print("\n'q' pressed. Exiting loop...")
-                break
-            # Add a small sleep to prevent busy-waiting if controller.run() is very fast
-            time.sleep(0.001)
+        elif controller.control_mode == "hold":
+            controller._send_hold_command()
+            time.sleep(controller.control_dt)
+        else:  # "damped" or any unknown -> default to damped
+            create_damping_cmd(controller.low_cmd)
+            controller.send_cmd(controller.low_cmd)
+            time.sleep(controller.control_dt)
 
-    print("Entering damping state...")
-    create_damping_cmd(controller.low_cmd)
-    controller.send_cmd(controller.low_cmd)
-
-    print("Exit") 
+    # Final cleanup is handled in emergency quit path; normal exit can just end.
+    print("Exit")

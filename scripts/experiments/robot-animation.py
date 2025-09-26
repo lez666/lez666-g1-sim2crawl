@@ -125,6 +125,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
     last_frame_time = 0.0
     anim_dt = float(anim["dt"]) if anim["dt"] else 1.0 / 30.0
     paused = False
+    playback_speed = 1.0
 
     # Reset to first frame
     scene_reset(scene, anim, joint_index_map)
@@ -145,13 +146,16 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         "RIGHT": False,
         "Q": False,
         "E": False,
-        "D": False
+        "D": False,
+        "MINUS": False,
+        "EQUALS": False
     }
     
     manual_stepping = False  # Track if we're in manual stepping mode
     
     def on_keyboard_event(event):
         nonlocal paused, frame_idx, last_frame_time, manual_stepping
+        nonlocal playback_speed
         
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
             if event.input.name == "R" and not keys_pressed["R"]:
@@ -221,6 +225,19 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         elif event.type == carb.input.KeyboardEventType.KEY_RELEASE:
             if event.input.name in keys_pressed:
                 keys_pressed[event.input.name] = False
+            # Allow speed keys to be reused
+            if event.input.name in ["MINUS", "EQUALS"]:
+                keys_pressed[event.input.name] = False
+        # Handle speed keys on press
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            if event.input.name == "MINUS" and not keys_pressed["MINUS"]:
+                keys_pressed["MINUS"] = True
+                playback_speed = max(0.1, playback_speed - 0.1)
+                print(f"Playback speed: {playback_speed:.2f}x")
+            elif event.input.name == "EQUALS" and not keys_pressed["EQUALS"]:
+                keys_pressed["EQUALS"] = True
+                playback_speed = min(5.0, playback_speed + 0.1)
+                print(f"Playback speed: {playback_speed:.2f}x")
     
     # Subscribe to keyboard events
     keyboard_subscription = input_interface.subscribe_to_keyboard_events(keyboard, on_keyboard_event)
@@ -394,6 +411,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
     print(f"  E - Step forward 1 frame (auto-pauses)")
     print(f"  D - Print current frame index and DOF values")
     print(f"  ESC - Exit")
+    print(f"  - / =  - Decrease/Increase playback speed")
     print(f"Press Ctrl+C or close window to stop")
     
     try:
@@ -410,7 +428,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
                 draw_contact_flags(frame_idx)
             
             # Advance frame only if not paused and not in manual stepping mode
-            if not paused and not manual_stepping and sim_time - last_frame_time >= anim_dt:
+            if not paused and not manual_stepping and sim_time - last_frame_time >= (anim_dt / max(1e-6, playback_speed)):
                 if frame_idx < anim["num_frames"] - 1:
                     frame_idx += 1
                     last_frame_time = sim_time

@@ -1,348 +1,398 @@
-# Copyright 2024 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-#modified by Logan
-"""Deploy a PyTorch policy to C MuJoCo and play with it."""
+import math
+import time
+from pathlib import Path
 
 import mujoco
 import mujoco.viewer as viewer
 import numpy as np
 import torch
-import json
-import math
-from pathlib import Path
-import os
-from keyboard_reader import KeyboardController
+import threading
+import tkinter as tk
+from dataclasses import dataclass
+from typing import Union
 from utils import (
     default_angles_config,
-
+    crawl_angles,
     init_joint_mappings,
     remap_pytorch_to_mujoco,
     remap_mujoco_to_pytorch,
 )
 
-POLICY_PATH = "deployment/crawl_policy.pt"
-POSES_JSON_PATH = (Path(__file__).parent / "_REF" / "output-example.json").as_posix()
-START_POSE_INDEX = 2  # 1-based index, consistent with sim-poses.py
-# Control mode: "nn" to use neural net, "hold" to freeze at initialized pose
-CONTROL_MODE = os.environ.get("G1_CONTROL_MODE", "nn").lower()
-HOLD_BEFORE_NN_SEC = float(os.environ.get("G1_HOLD_BEFORE_NN_SEC", "1.0"))
-ALWAYS_HOLD_AT_START = os.environ.get("G1_ALWAYS_HOLD_AT_START", "1").strip().lower() in {"1", "true", "yes", "y"}
+
+# SCENE_XML_PATH: Path = Path("/home/logan/Projects/g1_crawl/deployment/g1_description/scene_torso_collision_test.xml")
+SCENE_XML_PATH: Path = Path("/home/logan/Projects/g1_crawl/deployment/g1_description/scene_mjx_alt.xml")
+
+START_FACE_DOWN: bool = True
+DROP_HEIGHT_M: float = 0.5
+
+# NN control constants (simple, no args/params)
+NN_SWITCH_SEC: float = 1
+NN_POLICY_PATH: Path = Path("/home/logan/Projects/g1_crawl/deployment/policy.pt")
+NN_ACTION_SCALE: float = 0.5
+NN_N_SUBSTEPS: int = 4
+
+def rpy_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    if n == 0.0:
+        return 1.0, 0.0, 0.0, 0.0
+    return w / n, x / n, y / n, z / n
+
+
+def quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    w, x, y, z = q
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    if n == 0.0:
+        return 1.0, 0.0, 0.0, 0.0
+    return w / n, x / n, y / n, z / n
 
 
 class TorchController:
-  """PyTorch controller for the Go-1 robot."""
+    """Minimal PyTorch controller: fixed commands, no keyboard."""
 
-  def __init__(
-      self,
-      policy_path: str,
-      default_angles: np.ndarray,
-      n_substeps: int,
-      action_scale: float = 0.5,
-      vel_scale_x: float = 1.0,
-      vel_scale_y: float = 1.0,
-      vel_scale_rot: float = 1.0,
-  ):
-    self._policy = torch.load(policy_path, weights_only=False)
-    self._policy.eval()  # Set to evaluation mode
+    def __init__(
+        self,
+        policy_path: str,
+        default_angles: np.ndarray,
+        n_substeps: int,
+        action_scale: float = 0.5,
+        state: Union["ControlState", None] = None,
+    ) -> None:
+        self._policy = torch.load(policy_path, weights_only=False)
+        self._policy.eval()
 
-    self._action_scale = action_scale
-    self._default_angles = default_angles
-    self._last_action = np.zeros_like(default_angles, dtype=np.float32)  # In MuJoCo order
+        self._default_angles = default_angles.astype(np.float32)
+        self._last_action = np.zeros_like(default_angles, dtype=np.float32)
+        self._action_scale = float(action_scale)
+        print("ACTION_SCALE", self._action_scale)
+        self._n_substeps = int(n_substeps)
+        self._counter = 0
+        self._state = state
 
-    self._counter = 0
-    self._n_substeps = n_substeps
+        # Initialize joint mappings once
+        init_joint_mappings()
 
-    self._controller = KeyboardController(
-        vel_scale_x=vel_scale_x,
-        vel_scale_y=vel_scale_y,
-        vel_scale_rot=vel_scale_rot,
+    def _get_obs(self, model: mujoco.MjModel, data: mujoco.MjData) -> np.ndarray:
+        # Project gravity into IMU frame
+        world_gravity = model.opt.gravity
+        world_gravity = world_gravity / np.linalg.norm(world_gravity)
+        imu_xmat = data.site_xmat[model.site("imu_in_pelvis").id].reshape(3, 3)
+        projected_gravity = imu_xmat.T @ world_gravity
+
+        # Commanded velocities [lin_vel_z, lin_vel_y, ang_vel_x]
+        state = getattr(self, "_state", None)
+        if state is not None:
+            lin_vel_z = float(state.lin_vel_z)
+            ang_vel_x = float(state.ang_vel_x)
+        else:
+            lin_vel_z = 1.5
+            ang_vel_x = 0.0
+        velocity_commands = np.array([lin_vel_z, 0.0, ang_vel_x], dtype=np.float32)
+
+        # Joint states (MuJoCo order) → PyTorch order
+        joint_pos_mujoco = data.qpos[7:] - self._default_angles
+        joint_vel_mujoco = data.qvel[6:]
+        joint_pos_pytorch = remap_mujoco_to_pytorch(joint_pos_mujoco)
+        joint_vel_pytorch = remap_mujoco_to_pytorch(joint_vel_mujoco)
+        actions_pytorch = remap_mujoco_to_pytorch(self._last_action)
+
+        obs = np.hstack([
+            projected_gravity,
+            velocity_commands,
+            joint_pos_pytorch,
+            joint_vel_pytorch,
+            actions_pytorch,
+        ])
+        return obs.astype(np.float32)
+
+    def get_control(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+        self._counter += 1
+        if self._counter % self._n_substeps != 0:
+            return
+
+        obs = self._get_obs(model, data)
+        obs_tensor = torch.from_numpy(obs).float()
+        with torch.no_grad():
+            action_tensor = self._policy(obs_tensor)
+            pytorch_pred = action_tensor.numpy()
+
+        mujoco_pred = remap_pytorch_to_mujoco(pytorch_pred)
+        self._last_action = mujoco_pred.copy()
+        data.ctrl[:] = mujoco_pred * self._action_scale + self._default_angles
+        # data.ctrl[:] = self._default_angles
+
+
+
+@dataclass
+class ControlState:
+    mode: str = "hold"  # "hold" or "nn"
+    requested_reset: bool = False
+    action_scale: float = NN_ACTION_SCALE
+    n_substeps: int = NN_N_SUBSTEPS
+    lin_vel_z: float = 1.5  # Forward velocity
+    ang_vel_x: float = 0.0  # Angular velocity around x-axis
+    quit: bool = False
+
+
+class SimpleUI:
+    def __init__(self, state: ControlState) -> None:
+        self.state = state
+        self._root: tk.Tk | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        self._root = tk.Tk()
+        self._root.title("G1 Crawl Controls")
+
+        frm = tk.Frame(self._root)
+        frm.pack(padx=8, pady=8)
+
+        # Row 0: Mode selection
+        tk.Button(frm, text="Hold Pose", width=12, command=lambda: self._set_mode("hold")).grid(row=0, column=0, padx=4, pady=4)
+        tk.Button(frm, text="NN Control", width=12, command=lambda: self._set_mode("nn")).grid(row=0, column=1, padx=4, pady=4)
+
+        # Row 1: Reset / Quit
+        tk.Button(frm, text="Reset Drop", width=12, command=self._reset).grid(row=1, column=0, padx=4, pady=4)
+        tk.Button(frm, text="Quit", width=12, command=self._quit).grid(row=1, column=1, padx=4, pady=4)
+
+        # Row 2: Action scale slider
+        tk.Label(frm, text="Action Scale").grid(row=2, column=0, sticky="e", padx=4)
+        action_scale_var = tk.DoubleVar(value=self.state.action_scale)
+
+        def on_action_scale(val: str) -> None:
+            try:
+                self.state.action_scale = float(val)
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=0.0,
+            to=1.0,
+            resolution=0.01,
+            orient=tk.HORIZONTAL,
+            variable=action_scale_var,
+            command=on_action_scale,
+            length=220,
+        ).grid(row=2, column=1, sticky="w", padx=4)
+
+        # Row 3: Substeps slider
+        tk.Label(frm, text="Substeps").grid(row=3, column=0, sticky="e", padx=4)
+        n_substeps_var = tk.IntVar(value=self.state.n_substeps)
+
+        def on_substeps(val: str) -> None:
+            try:
+                self.state.n_substeps = max(1, int(float(val)))
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=1,
+            to=8,
+            resolution=1,
+            orient=tk.HORIZONTAL,
+            variable=n_substeps_var,
+            command=on_substeps,
+            length=220,
+        ).grid(row=3, column=1, sticky="w", padx=4)
+
+        # Row 4: Forward velocity slider
+        tk.Label(frm, text="Forward Vel").grid(row=4, column=0, sticky="e", padx=4)
+        lin_vel_z_var = tk.DoubleVar(value=self.state.lin_vel_z)
+
+        def on_lin_vel_z(val: str) -> None:
+            try:
+                self.state.lin_vel_z = float(val)
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=0,
+            to=1.5,
+            resolution=0.1,
+            orient=tk.HORIZONTAL,
+            variable=lin_vel_z_var,
+            command=on_lin_vel_z,
+            length=220,
+        ).grid(row=4, column=1, sticky="w", padx=4)
+
+        # Row 5: Angular velocity slider
+        tk.Label(frm, text="Angular Vel").grid(row=5, column=0, sticky="e", padx=4)
+        ang_vel_x_var = tk.DoubleVar(value=self.state.ang_vel_x)
+
+        def on_ang_vel_x(val: str) -> None:
+            try:
+                self.state.ang_vel_x = float(val)
+            except Exception:
+                pass
+
+        tk.Scale(
+            frm,
+            from_=-1.0,
+            to=1.0,
+            resolution=0.1,
+            orient=tk.HORIZONTAL,
+            variable=ang_vel_x_var,
+            command=on_ang_vel_x,
+            length=220,
+        ).grid(row=5, column=1, sticky="w", padx=4)
+
+        self._root.protocol("WM_DELETE_WINDOW", self._quit)
+        self._root.mainloop()
+
+    def _set_mode(self, mode: str) -> None:
+        self.state.mode = str(mode)
+
+    def _reset(self) -> None:
+        self.state.requested_reset = True
+
+    def _quit(self) -> None:
+        self.state.quit = True
+        if self._root is not None:
+            try:
+                self._root.after(0, self._root.destroy)
+            except Exception:
+                pass
+
+
+def main() -> None:
+    model = mujoco.MjModel.from_xml_path(SCENE_XML_PATH.as_posix())
+    data = mujoco.MjData(model)
+
+    # Find a FREE joint if present
+    free_qpos_addr: int | None = None
+    for j in range(model.njnt):
+        if model.jnt_type[j] == 0:
+            free_qpos_addr = int(model.jnt_qposadr[j])
+            break
+
+    # Start face-down with a small drop if a FREE joint is present
+    if START_FACE_DOWN and free_qpos_addr is not None:
+        data.qpos[free_qpos_addr + 0] = 0.0
+        data.qpos[free_qpos_addr + 1] = 0.0
+        data.qpos[free_qpos_addr + 2] = float(max(0.0, DROP_HEIGHT_M))
+        qw, qx, qy, qz = rpy_to_quat(0.0, math.pi / 2.0, 0.0)
+        data.qpos[free_qpos_addr + 3] = qw
+        data.qpos[free_qpos_addr + 4] = qx
+        data.qpos[free_qpos_addr + 5] = qy
+        data.qpos[free_qpos_addr + 6] = qz
+
+    # Apply crawl_angles to all hinge/slide joints before first forward
+    k = 0
+    for j in range(model.njnt):
+        if model.jnt_type[j] in (2, 3):  # hinge or slide
+            if k < len(crawl_angles):
+                adr = model.jnt_qposadr[j]
+                data.qpos[adr] = float(crawl_angles[k])
+                k += 1
+
+    mujoco.mj_forward(model, data)
+
+    # Build mapping from joint id -> actuator id (names are aligned in XML)
+    joint_to_actuator: dict[int, int] = {}
+    for j in range(model.njnt):
+        if model.jnt_type[j] not in (2, 3):
+            continue
+        jname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
+        if jname is None:
+            continue
+        try:
+            aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, jname)
+        except Exception:
+            aid = -1
+        if aid != -1:
+            joint_to_actuator[int(j)] = int(aid)
+
+    controlled_joint_ids = sorted(joint_to_actuator.keys())
+
+    # Hold targets come directly from crawl_angles (MuJoCo hinge/slide joint order)
+    # Map by XML joint order (ids increase with definition order)
+    hold_targets: dict[int, float] = {}
+    for k, j in enumerate(controlled_joint_ids):
+        if k < len(crawl_angles):
+            hold_targets[j] = float(crawl_angles[k])
+        else:
+            hold_targets[j] = 0.0
+
+    # Start simple UI in background
+    ctrl_state = ControlState(action_scale=NN_ACTION_SCALE, n_substeps=NN_N_SUBSTEPS)
+    ui = SimpleUI(state=ctrl_state)
+
+    # Prepare NN controller and switching timer
+    controller = TorchController(
+        policy_path=NN_POLICY_PATH.as_posix(),
+        default_angles=np.array(default_angles_config, dtype=np.float32),
+        n_substeps=NN_N_SUBSTEPS,
+        action_scale=NN_ACTION_SCALE,
+        state=ctrl_state,
     )
+    t0 = time.time()
 
-    # Initialize joint mappings
-    init_joint_mappings()
+    with viewer.launch_passive(model=model, data=data, show_left_ui=False, show_right_ui=False) as v:
+        while v.is_running():
+            if ctrl_state.quit:
+                break
+            elapsed = time.time() - t0
+            # Process UI intents
+            if ctrl_state.requested_reset:
+                # Re-apply face-down drop (if free joint)
+                if free_qpos_addr is not None:
+                    data.qpos[free_qpos_addr + 0] = 0.0
+                    data.qpos[free_qpos_addr + 1] = 0.0
+                    data.qpos[free_qpos_addr + 2] = float(max(0.0, DROP_HEIGHT_M))
+                    qw, qx, qy, qz = rpy_to_quat(0.0, math.pi / 2.0, 0.0)
+                    data.qpos[free_qpos_addr + 3] = qw
+                    data.qpos[free_qpos_addr + 4] = qx
+                    data.qpos[free_qpos_addr + 5] = qy
+                    data.qpos[free_qpos_addr + 6] = qz
+                # Re-apply crawl_angles to hinge/slide joints
+                k = 0
+                for j in range(model.njnt):
+                    if model.jnt_type[j] in (2, 3):
+                        if k < len(crawl_angles):
+                            adr = model.jnt_qposadr[j]
+                            data.qpos[adr] = float(crawl_angles[k])
+                            k += 1
+                mujoco.mj_forward(model, data)
+                ctrl_state.requested_reset = False
 
+            # Sync controller params from UI
+            controller._action_scale = float(ctrl_state.action_scale)
+            controller._n_substeps = int(ctrl_state.n_substeps)
 
-  def get_obs(self, model, data) -> np.ndarray:
-    # Simplified observation: 75 dimensions total
-    # projected_gravity (3) + velocity_commands (3) + joint_pos (23) + joint_vel (23) + actions (23)
-    
-    # Get projected gravity (3 dimensions)
-    # imu_xmat = data.site_xmat[model.site("imu_in_pelvis").id].reshape(3, 3)
-    # projected_gravity = imu_xmat.T @ np.array([0, 0, -1])
-    world_gravity = model.opt.gravity
-    world_gravity = world_gravity / np.linalg.norm(world_gravity)  # Normalize
-    imu_xmat = data.site_xmat[model.site("imu_in_pelvis").id].reshape(3, 3)
-    projected_gravity = imu_xmat.T @ world_gravity
-    # Get velocity commands and map to env's expected order [lin_vel_z, lin_vel_y, ang_vel_x]
-    kb_vx, kb_vy, kb_wz = self._controller.get_command()
-    lin_vel_z = 2.0#np.clip(kb_vx, 0.0, 2.0)
-    lin_vel_y = 0.0  # training used zero lateral velocity
-    ang_vel_x = 0.0 #np.clip(kb_wz, -1.0, 1.0)
-    velocity_commands = np.array([lin_vel_z, lin_vel_y, ang_vel_x], dtype=np.float32)
-    # velocity_commands = np.array([0.25, 0.0, 0.0])  # Forward velocity command
-    
-    # Get joint positions and velocities in MuJoCo order, then convert to PyTorch order
-    joint_pos_mujoco = data.qpos[7:] - self._default_angles
-    joint_vel_mujoco = data.qvel[6:]
-    
-    # Convert to PyTorch model joint order for the observation
-    joint_pos_pytorch = remap_mujoco_to_pytorch(joint_pos_mujoco)
-    joint_vel_pytorch = remap_mujoco_to_pytorch(joint_vel_mujoco)
-    
-    # Last action should also be in PyTorch order for the observation
-    # Convert the MuJoCo-ordered last action to PyTorch order
-    actions_pytorch = remap_mujoco_to_pytorch(self._last_action)
-    
-    # Concatenate all observations: 3 + 3 + 23 + 23 + 23 = 75
-    obs = np.hstack([
-        projected_gravity,
-        velocity_commands, 
-        joint_pos_pytorch,
-        joint_vel_pytorch,
-        actions_pytorch,
-    ])
-    
-    return obs.astype(np.float32)
+            # Control mode: initial hold for NN_SWITCH_SEC unless user forces NN
+            if elapsed < NN_SWITCH_SEC and ctrl_state.mode != "nn":
+                mode = "hold"
+            else:
+                mode = ctrl_state.mode
 
-  def get_control(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
-    self._counter += 1
-    if self._counter % self._n_substeps == 0:
-      obs = self.get_obs(model, data)
-      
-      # Convert to torch tensor and run inference
-      obs_tensor = torch.from_numpy(obs).float()
-      
-      with torch.no_grad():
-        action_tensor = self._policy(obs_tensor)
-        pytorch_pred = action_tensor.numpy()  # Actions in PyTorch model joint order
+            if mode == "hold":
+                for j in controlled_joint_ids:
+                    aid = joint_to_actuator[j]
+                    data.ctrl[aid] = hold_targets[j]
+            else:
+                controller.get_control(model, data)
 
-
-      # Convert actions from PyTorch order to MuJoCo order
-      mujoco_pred = remap_pytorch_to_mujoco(pytorch_pred)
-
-      self._last_action = mujoco_pred.copy()  # Store in MuJoCo order
-      # data.ctrl[:] =  self._default_angles
-      # print(mujoco_pred)
-
-      data.ctrl[:] = mujoco_pred * self._action_scale + self._default_angles
-
-def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
-  cr = math.cos(roll * 0.5)
-  sr = math.sin(roll * 0.5)
-  cp = math.cos(pitch * 0.5)
-  sp = math.sin(pitch * 0.5)
-  cy = math.cos(yaw * 0.5)
-  sy = math.sin(yaw * 0.5)
-  w = cr * cp * cy + sr * sp * sy
-  x = sr * cp * cy - cr * sp * sy
-  y = cr * sp * cy + sr * cp * sy
-  z = cr * cp * sy - sr * sp * cy
-  n = math.sqrt(w * w + x * x + y * y + z * z)
-  if n == 0.0:
-    return 1.0, 0.0, 0.0, 0.0
-  return w / n, x / n, y / n, z / n
-
-
-def _find_free_qpos_addr(model: mujoco.MjModel) -> int | None:
-  for j in range(model.njnt):
-    if int(model.jnt_type[j]) == 0:  # mjJNT_FREE
-      return int(model.jnt_qposadr[j])
-  return None
-
-
-def _load_poses_json(json_path: str) -> list[dict]:
-  data = json.loads(Path(json_path).read_text())
-  poses = []
-  for item in data.get("poses", []):
-    base_rpy = item.get("base_rpy")
-    joints_raw = item.get("joints", {})
-    joints: dict[int | str, float] = {}
-    for k, v in joints_raw.items():
-      try:
-        k_int = int(k)  # type: ignore[arg-type]
-        joints[k_int] = float(v)
-      except (ValueError, TypeError):
-        joints[str(k)] = float(v)
-    poses.append({"base_rpy": base_rpy, "joints": joints})
-  return poses
-
-
-def _apply_pose(model: mujoco.MjModel, data: mujoco.MjData, pose: dict, drop_height_m: float = 0.5) -> None:
-  # Set base orientation if FREE joint exists
-  free_adr = _find_free_qpos_addr(model)
-  base_rpy = pose.get("base_rpy") if isinstance(pose, dict) else None
-  if free_adr is not None and isinstance(base_rpy, (list, tuple)) and len(base_rpy) == 3:
-    roll, pitch, yaw = float(base_rpy[0]), float(base_rpy[1]), float(base_rpy[2])
-    qw, qx, qy, qz = _rpy_to_quat(roll, pitch, yaw)
-    data.qpos[free_adr + 0] = 0.0
-    data.qpos[free_adr + 1] = 0.0
-    data.qpos[free_adr + 2] = float(max(0.0, drop_height_m))
-    data.qpos[free_adr + 3] = qw
-    data.qpos[free_adr + 4] = qx
-    data.qpos[free_adr + 5] = qy
-    data.qpos[free_adr + 6] = qz
-
-  # Apply hinge/slide joints by id or name
-  joints = pose.get("joints", {}) if isinstance(pose, dict) else {}
-  for j_key, val in joints.items():
-    if isinstance(j_key, int):
-      j_id = int(j_key)
-    else:
-      try:
-        j_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, str(j_key)))
-      except Exception:
-        continue
-    # Only SLIDE(2) and HINGE(3) have nq=1
-    if int(model.jnt_type[j_id]) not in (2, 3):
-      continue
-    adr = int(model.jnt_qposadr[j_id])
-    data.qpos[adr] = float(val)
-
-
-def _build_joint_to_actuator_map(model: mujoco.MjModel) -> dict[int, int]:
-  mapping: dict[int, int] = {}
-  for j in range(model.njnt):
-    if int(model.jnt_type[j]) not in (2, 3):
-      continue
-    jname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
-    if jname is None:
-      continue
-    try:
-      aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, jname)
-    except Exception:
-      aid = -1
-    if int(aid) != -1:
-      mapping[int(j)] = int(aid)
-  return mapping
-
-
-class HoldPoseController:
-  def __init__(self, joint_to_actuator: dict[int, int], hold_targets: dict[int, float]):
-    self._joint_to_actuator = joint_to_actuator
-    self._hold_targets = hold_targets
-
-  def get_control(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
-    for j, aid in self._joint_to_actuator.items():
-      data.ctrl[aid] = self._hold_targets[j]
-
-
-# class HoldThenNNController:
-#   def __init__(self, hold_controller: HoldPoseController, nn_controller: TorchController, switch_time_s: float):
-#     self._hold_controller = hold_controller
-#     self._nn_controller = nn_controller
-#     self._switch_time_s = float(switch_time_s)
-#     self._switched = False
-#     self._logged_first = False
-
-#   def get_control(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
-#     if (not self._switched) and data.time >= self._switch_time_s:
-#       self._switched = True
-#       print(f"[HoldThenNN] Switching to NN at t={data.time:.3f}s (threshold {self._switch_time_s:.3f}s)")
-#     if self._switched:
-#       self._nn_controller.get_control(model, data)
-#     else:
-#       if not self._logged_first:
-#         print(f"[HoldThenNN] Holding pose until t={self._switch_time_s:.3f}s; current t={data.time:.3f}s")
-#         self._logged_first = True
-#       self._hold_controller.get_control(model, data)
-
-
-def load_callback(model=None, data=None):
-  mujoco.set_mjcb_control(None)
-
-
-  model = mujoco.MjModel.from_xml_path('deployment/g1_description/scene_mjx_alt.xml')
-  data = mujoco.MjData(model)
-
-  mujoco.mj_resetDataKeyframe(model, data, 1)
-
-  # Initialize to crawl orientation (body and joints) using poses JSON
-  poses = _load_poses_json(POSES_JSON_PATH)
-  if not poses:
-    raise RuntimeError(f"No poses found in {POSES_JSON_PATH}")
-  idx = max(0, min(len(poses) - 1, int(START_POSE_INDEX) - 1))
-  _apply_pose(model, data, poses[idx], drop_height_m=0.5)
-  mujoco.mj_forward(model, data)
-
-  print(model.opt.timestep)
-  sim_dt = 0.005
-  n_substeps = 4
-  model.opt.timestep = sim_dt
-  
-  joint_to_actuator = _build_joint_to_actuator_map(model)
-  if not joint_to_actuator:
-    raise RuntimeError("No joint->actuator mapping found; cannot hold pose")
-  hold_targets: dict[int, float] = {}
-  for j in sorted(joint_to_actuator.keys()):
-    adr = int(model.jnt_qposadr[int(j)])
-    hold_targets[int(j)] = float(data.qpos[adr])
-  hold = HoldPoseController(joint_to_actuator, hold_targets)
-  for j, aid in joint_to_actuator.items():
-      data.ctrl[aid] = hold_targets[j]
-
-  mujoco.set_mjcb_control(hold.get_control)
-  # if CONTROL_MODE == "nn":
-  #   policy = TorchController(
-  #       policy_path=POLICY_PATH,
-  #       default_angles=np.array(default_angles_config),
-  #       n_substeps=n_substeps,
-  #       action_scale=0.5,
-  #       vel_scale_x=2.0,
-  #       vel_scale_y=0.0,
-  #       vel_scale_rot=1.0,
-  #   )
-  #   if ALWAYS_HOLD_AT_START and HOLD_BEFORE_NN_SEC > 0.0:
-  #     # Build a hold from current qpos, then switch to NN after delay
-  #     joint_to_actuator = _build_joint_to_actuator_map(model)
-  #     if not joint_to_actuator:
-  #       raise RuntimeError("No joint->actuator mapping found; cannot hold pose before NN")
-  #     hold_targets: dict[int, float] = {}
-  #     for j in sorted(joint_to_actuator.keys()):
-  #       adr = int(model.jnt_qposadr[int(j)])
-  #       hold_targets[int(j)] = float(data.qpos[adr])
-  #     hold = HoldPoseController(joint_to_actuator, hold_targets)
-  #     switching = HoldThenNNController(hold, policy, HOLD_BEFORE_NN_SEC)
-  #     mujoco.set_mjcb_control(switching.get_control)
-  #   else:
-  #     mujoco.set_mjcb_control(policy.get_control)
-  # else:
-  #   # Freeze joints at initialized pose by holding actuator targets to current qpos
-  #   joint_to_actuator = _build_joint_to_actuator_map(model)
-  #   if not joint_to_actuator:
-  #     raise RuntimeError("No joint->actuator mapping found; cannot hold pose")
-  #   hold_targets: dict[int, float] = {}
-  #   for j in sorted(joint_to_actuator.keys()):
-  #     adr = int(model.jnt_qposadr[int(j)])
-  #     hold_targets[int(j)] = float(data.qpos[adr])
-  #   hold = HoldPoseController(joint_to_actuator, hold_targets)
-  #   # Prepare neural controller and switch after a delay
-  #   policy = TorchController(
-  #       policy_path=POLICY_PATH,
-  #       default_angles=np.array(default_angles_config),
-  #       n_substeps=n_substeps,
-  #       action_scale=0.5,
-  #       vel_scale_x=2.0,
-  #       vel_scale_y=0.0,
-  #       vel_scale_rot=1.0,
-  #   )
-  #   switching = HoldThenNNController(hold, policy, HOLD_BEFORE_NN_SEC)
-  #   mujoco.set_mjcb_control(switching.get_control)
-
-  return model, data
+            mujoco.mj_step(model, data)
+            v.sync()
+            time.sleep(max(0.0, model.opt.timestep * 0.5))
 
 
 if __name__ == "__main__":
-  viewer.launch(loader=load_callback)
+    main()
+
+

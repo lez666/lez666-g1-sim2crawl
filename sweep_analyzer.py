@@ -7,21 +7,52 @@ from pathlib import Path
 from datetime import datetime
 
 def extract_parameters(experiment_dir):
-    """Extract parameters from an experiment directory - now generic."""
+    """Extract parameters and sweep overrides from an experiment directory.
+
+    Returns a dict that includes flags for agent/env configs, the experiment
+    folder name, optional UUID, and any sweep overrides captured in
+    `sweep_overrides.txt`.
+    """
     agent_file = os.path.join(experiment_dir, "params", "agent.yaml")
     env_file = os.path.join(experiment_dir, "params", "env.yaml")
-    
+
     params = {}
-    
-    # Generic parameter extraction - just record that config files exist
+
     if os.path.exists(agent_file):
         params['has_agent_config'] = True
     if os.path.exists(env_file):
         params['has_env_config'] = True
-    
-    # Extract experiment directory name as the main identifier
+
     params['experiment_dir'] = os.path.basename(experiment_dir)
-    
+
+    # Try to read sweep overrides file created by the sweep script
+    overrides_path = os.path.join(experiment_dir, "sweep_overrides.txt")
+    overrides = {}
+    if os.path.exists(overrides_path):
+        try:
+            with open(overrides_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if line.startswith('uuid:'):
+                        params['uuid'] = line.split(':', 1)[1].strip()
+                        continue
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        overrides[k.strip()] = v.strip()
+        except Exception:
+            # Fail quietly here since labeling can still proceed with folder info
+            pass
+    if overrides:
+        params['overrides'] = overrides
+
+    # Derive UUID from directory suffix if not present
+    if 'uuid' not in params:
+        parts = params['experiment_dir'].rsplit("_", 1)
+        if len(parts) == 2 and len(parts[1]) == 4 and parts[1].isalnum():
+            params['uuid'] = parts[1]
+
     return params
 
 def check_ffmpeg_capabilities():
@@ -33,7 +64,7 @@ def check_ffmpeg_capabilities():
     }
 
 def create_labeled_videos(experiments, timestamp, capabilities=None, base_output_dir="."):
-    """Create individual labeled videos for each experiment."""
+    """Create individual labeled videos for each experiment with UUID and key params."""
     labeled_videos = []
     temp_dir_name = f"temp_labeled_{timestamp}"
     temp_dir = os.path.join(base_output_dir, temp_dir_name)
@@ -46,13 +77,20 @@ def create_labeled_videos(experiments, timestamp, capabilities=None, base_output
     print(f"   Using font: {font_file}")
     
     for i, exp in enumerate(experiments, 1):
-        # Use the 4-char run UUID as the label when available (fallback to folder name)
+        # Build label text: include UUID and a compact set of params if available
         folder_name = exp['directory']
-        run_uuid = None
-        parts = folder_name.rsplit("_", 1)
-        if len(parts) == 2 and len(parts[1]) == 4 and parts[1].isalnum():
-            run_uuid = parts[1]
-        label_text = f"{run_uuid}" if run_uuid else f"{folder_name}"
+        run_uuid = exp['params'].get('uuid')
+        # Choose a small subset of overrides to display to keep overlay readable
+        overrides = exp['params'].get('overrides', {})
+        # Include up to 3 key-value pairs
+        override_items = list(overrides.items())[:3]
+        kv_text = ", ".join(f"{k.split('.')[-2]}={v}" for k, v in override_items)
+        if run_uuid and kv_text:
+            label_text = f"{run_uuid} | {kv_text}"
+        elif run_uuid:
+            label_text = f"{run_uuid}"
+        else:
+            label_text = f"{folder_name}"
         
         output_video = os.path.join(temp_dir, f"labeled_{i:02d}.mp4")
         
