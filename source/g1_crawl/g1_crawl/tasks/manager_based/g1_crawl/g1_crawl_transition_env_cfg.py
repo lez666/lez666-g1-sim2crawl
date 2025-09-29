@@ -83,7 +83,7 @@ class CommandsCfg:
 
     boolean_command = mdp.BooleanCommandCfg(
         asset_name="robot",
-        resampling_time_range=(2.0, 3.0),
+        resampling_time_range=(3.0, 6.0),
         true_probability=0.5,
         debug_vis=False
     )
