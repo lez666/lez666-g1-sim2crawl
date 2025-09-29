@@ -12,6 +12,8 @@ specify the reward function and its parameters.
 from __future__ import annotations
 
 import torch
+import json
+import os
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import  RigidObject
@@ -110,6 +112,195 @@ def joint_proximity_bonus_exp(
     reward = torch.exp(-err_sq / (std ** 2))
     
     return reward
+
+
+# Global cache for pose data to avoid repeated file loading
+_pose_cache = {}
+_pose_full_cache = {}
+
+def clear_pose_cache():
+    """Clear the pose data cache. Useful for testing or when pose files change."""
+    global _pose_cache
+    _pose_cache.clear()
+    _pose_full_cache.clear()
+
+def _load_pose_from_json(json_path: str) -> dict:
+    """Load joint pose data from JSON file with caching.
+    
+    Args:
+        json_path: Path to the JSON file containing pose data.
+        
+    Returns:
+        Dictionary containing joint positions.
+    """
+    # Check cache first
+    if json_path in _pose_cache:
+        return _pose_cache[json_path]
+    
+    # Get the project root directory (assuming this is called from the project root)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../.."))
+    full_path = os.path.join(project_root, json_path)
+    
+    with open(full_path, 'r') as f:
+        data = json.load(f)
+    
+    # Extract the first pose from the poses array
+    if "poses" in data and len(data["poses"]) > 0:
+        pose_data = data["poses"][0]["joints"]
+        # Cache the result
+        _pose_cache[json_path] = pose_data
+        return pose_data
+    else:
+        raise ValueError(f"No poses found in {json_path}")
+
+
+def _build_target_vector_from_pose_dict(asset: Articulation, pose: dict) -> torch.Tensor:
+    """Build a target joint position vector in the exact order of asset.joint_names.
+
+    Fails loudly if any joint name is missing in the provided pose dict.
+    """
+    names = asset.joint_names
+    missing = [n for n in names if n not in pose]
+    if len(missing) > 0:
+        raise KeyError(f"Pose dict missing joint keys: {missing[:8]}{'...' if len(missing) > 8 else ''}")
+    values = [pose[n] for n in names]
+    return torch.tensor(values, dtype=asset.data.joint_pos.dtype, device=asset.data.joint_pos.device)
+
+
+def _get_full_target_vector(json_path: str, asset: Articulation) -> torch.Tensor:
+    """Return a cached full-length target vector for the given pose json and asset.
+
+    Keyed by (json_path, joint_names tuple, dtype, device). Fails loudly if pose is missing joints.
+    """
+    key = (
+        json_path,
+        tuple(asset.joint_names),
+        str(asset.data.joint_pos.dtype),
+        str(asset.data.joint_pos.device),
+    )
+    if key in _pose_full_cache:
+        return _pose_full_cache[key]
+
+    pose_dict = _load_pose_from_json(json_path)
+    vec = _build_target_vector_from_pose_dict(asset, pose_dict)
+    _pose_full_cache[key] = vec
+    return vec
+
+
+def command_based_pose_proximity_bonus_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    command_0_pose_path: str = "assets/crawl-pose.json",
+    command_1_pose_path: str = "assets/stand-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Exponential bonus reward for being close to command-based goal joint positions.
+    
+    When command is 0: uses command_0_pose_path as target
+    When command is 1: uses command_1_pose_path as target
+    
+    Note: Pose data is cached after first load to avoid repeated file I/O.
+    
+    Args:
+        env: RL environment.
+        command_name: Name of the boolean command to use for pose selection.
+        std: Standard deviation parameter controlling reward falloff.
+        command_0_pose_path: Path to pose JSON file for command=0.
+        command_1_pose_path: Path to pose JSON file for command=1.
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with proximity bonuses in [0, 1].
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Command mask (num_envs,)
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+
+    # Validate std
+    std_val = float(std)
+    if std_val <= 0.0:
+        raise RuntimeError("command_based_pose_proximity_bonus_exp requires std > 0")
+
+    # Load and build full target vectors in joint order
+    pose_0_full = _get_full_target_vector(command_0_pose_path, asset)
+    pose_1_full = _get_full_target_vector(command_1_pose_path, asset)
+
+    num_envs = asset.data.joint_pos.shape[0]
+    # Build per-env full target matrix based on command (broadcast where)
+    mask = (command_values > 0.5).view(num_envs, 1)
+    target_full = torch.where(
+        mask,
+        pose_1_full.view(1, -1).expand(num_envs, -1),
+        pose_0_full.view(1, -1).expand(num_envs, -1),
+    )
+
+    # Select only configured joints
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_sel = target_full[:, asset_cfg.joint_ids]
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in command_based_pose_proximity_bonus_exp")
+
+    deviations = joint_pos_sel - target_sel
+    err_sq = torch.sum(torch.square(deviations), dim=1)
+    reward = torch.exp(-err_sq / (std_val ** 2))
+    return reward
+
+
+def command_based_joint_deviation_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_0_pose_path: str = "assets/crawl-pose.json",
+    command_1_pose_path: str = "assets/stand-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """L1 penalty for joint positions that deviate from command-based target poses.
+    
+    When command is 0: uses command_0_pose_path as target
+    When command is 1: uses command_1_pose_path as target
+    
+    Note: Pose data is cached after first load to avoid repeated file I/O.
+    
+    Args:
+        env: RL environment.
+        command_name: Name of the boolean command to use for pose selection.
+        command_0_pose_path: Path to pose JSON file for command=0.
+        command_1_pose_path: Path to pose JSON file for command=1.
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with L1 deviation penalties.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Command mask (num_envs,)
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+
+    # Load and build full target vectors in joint order
+    pose_0_full = _get_full_target_vector(command_0_pose_path, asset)
+    pose_1_full = _get_full_target_vector(command_1_pose_path, asset)
+
+    num_envs = asset.data.joint_pos.shape[0]
+    mask = (command_values > 0.5).view(num_envs, 1)
+    target_full = torch.where(
+        mask,
+        pose_1_full.view(1, -1).expand(num_envs, -1),
+        pose_0_full.view(1, -1).expand(num_envs, -1),
+    )
+
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_sel = target_full[:, asset_cfg.joint_ids]
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in command_based_joint_deviation_l1")
+
+    deviations = torch.abs(joint_pos_sel - target_sel)
+    total_deviation = torch.sum(deviations, dim=1)
+    return total_deviation
 
 def animation_pose_similarity_l1(
     env: ManagerBasedRLEnv,

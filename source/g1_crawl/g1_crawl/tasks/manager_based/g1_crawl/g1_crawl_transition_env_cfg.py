@@ -83,7 +83,7 @@ class CommandsCfg:
 
     boolean_command = mdp.BooleanCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 10.0),
+        resampling_time_range=(2.0, 3.0),
         true_probability=0.5,
         debug_vis=False
     )
@@ -312,19 +312,28 @@ class RewardsCfg:
     #     },
     # )
 
-    joint_deviation_all = RewTerm(
-        func=mdp.joint_deviation_l1,
+    # Command-based joint deviation penalty
+    command_joint_deviation_all = RewTerm(
+        func=mdp.command_based_joint_deviation_l1,
         weight=-0.2,
-        params={"asset_cfg": SceneEntityCfg("robot")},
+        params={
+            "command_name": "boolean_command",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "command_0_pose_path": "assets/crawl-pose.json",
+            "command_1_pose_path": "assets/stand-pose.json",
+        },
     )
     
-    # Bonus for being close to default joint positions
-    joint_proximity_bonus = RewTerm(
-        func=mdp.joint_proximity_bonus_exp,
+    # Bonus for being close to command-based goal joint positions
+    command_pose_proximity_bonus = RewTerm(
+        func=mdp.command_based_pose_proximity_bonus_exp,
         weight=1.0,
         params={
+            "command_name": "boolean_command",
             "asset_cfg": SceneEntityCfg("robot"),
             "std": 0.1,  # Adjust this value: smaller = sharper falloff, larger = more forgiving
+            "command_0_pose_path": "assets/crawl-pose.json",
+            "command_1_pose_path": "assets/stand-pose.json",
         },
     )
     
@@ -436,7 +445,7 @@ class G1CrawlTransitionEnvCfg(ManagerBasedRLEnvCfg):
 
         # general settings
         self.decimation = 4
-        self.episode_length_s = 20.0
+        self.episode_length_s = 7.0
         # simulation settings
         # self.sim.dt = 0.002
         self.sim.dt = 0.005
