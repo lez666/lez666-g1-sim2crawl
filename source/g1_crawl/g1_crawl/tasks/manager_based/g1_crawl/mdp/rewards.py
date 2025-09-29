@@ -76,6 +76,41 @@ def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scene
     angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
     return torch.sum(torch.abs(angle), dim=1)
 
+
+def joint_proximity_bonus_exp(
+    env: ManagerBasedRLEnv, 
+    std: float, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Exponential bonus reward for being close to default joint positions.
+    
+    reward = exp(-sum(|joint_pos - default_pos|^2) / std^2)
+    
+    Args:
+        env: RL environment.
+        std: Standard deviation parameter controlling reward falloff (smaller = sharper falloff).
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with proximity bonuses in [0, 1].
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    
+    # Compute joint position deviations
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviations = joint_pos - default_pos
+    
+    # Compute squared L2 norm of deviations
+    err_sq = torch.sum(torch.square(deviations), dim=1)
+    
+    # Exponential bonus: exp(-err_sq / std^2)
+    # When err_sq = 0 (perfect match): reward = 1.0
+    # As err_sq increases: reward approaches 0
+    reward = torch.exp(-err_sq / (std ** 2))
+    
+    return reward
+
 def animation_pose_similarity_l1(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

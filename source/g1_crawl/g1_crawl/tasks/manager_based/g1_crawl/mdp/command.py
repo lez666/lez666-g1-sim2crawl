@@ -336,3 +336,104 @@ class CrawlVelocityCommandCfg(CommandTermCfg):
     current_vel_base_alt1_visualizer_cfg.markers["arrow"].color = (1.0, 0.6, 0.1)
     
 
+
+class BooleanCommand(CommandTerm):
+    r"""Command generator that generates a single boolean command (0. or 1.).
+
+    The command is a single boolean value that can be used for simple on/off control.
+    The probability of generating a 1. (True) is controlled by the configuration.
+    """
+
+    cfg: BooleanCommandCfg
+    """The configuration of the command generator."""
+
+    def __init__(self, cfg: BooleanCommandCfg, env: ManagerBasedEnv):
+        """Initialize the command generator.
+
+        Args:
+            cfg: The configuration of the command generator.
+            env: The environment.
+        """
+        # initialize the base class
+        super().__init__(cfg, env)
+
+        # create buffer to store the command
+        # -- command: single boolean value
+        self.boolean_command = torch.zeros(self.num_envs, 1, device=self.device)
+        # -- metrics
+        self.metrics["command_value"] = torch.zeros(self.num_envs, device=self.device)
+
+    def __str__(self) -> str:
+        """Return a string representation of the command generator."""
+        msg = "BooleanCommand:\n"
+        msg += f"\tCommand dimension: {tuple(self.command.shape[1:])}\n"
+        msg += f"\tResampling time range: {self.cfg.resampling_time_range}\n"
+        msg += f"\tTrue probability: {self.cfg.true_probability}"
+        return msg
+
+    """
+    Properties
+    """
+
+    @property
+    def command(self) -> torch.Tensor:
+        """The desired boolean command. Shape is (num_envs, 1)."""
+        return self.boolean_command
+
+    """
+    Implementation specific functions.
+    """
+
+    def _update_metrics(self):
+        """Update metrics for the boolean command."""
+        # Store the current command value as a metric
+        self.metrics["command_value"] = self.boolean_command[:, 0]
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        """Resample the boolean command for specified environments."""
+        # sample boolean commands based on probability
+        r = torch.empty(len(env_ids), device=self.device)
+        # generate random values and compare with true probability
+        random_values = r.uniform_(0.0, 1.0)
+        self.boolean_command[env_ids, 0] = (random_values <= self.cfg.true_probability).float()
+
+    def _update_command(self):
+        """Post-processes the boolean command.
+        
+        Currently no post-processing needed for boolean commands.
+        """
+        pass
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        """Set debug visualization for boolean commands.
+        
+        Boolean commands don't have natural visual representation,
+        so this is a placeholder for future visualization needs.
+        """
+        pass
+
+    def _debug_vis_callback(self, event):
+        """Debug visualization callback for boolean commands.
+        
+        Boolean commands don't have natural visual representation,
+        so this is a placeholder for future visualization needs.
+        """
+        pass
+
+
+@configclass
+class BooleanCommandCfg(CommandTermCfg):
+    """Configuration for the boolean command generator."""
+
+    class_type: type = BooleanCommand
+
+    asset_name: str = MISSING
+    """Name of the asset in the environment for which the commands are generated."""
+
+    true_probability: float = 0.5
+    """Probability of generating a True (1.) command. Defaults to 0.5.
+    
+    This controls the probability that the boolean command will be 1. (True)
+    versus 0. (False) when resampling.
+    """
+

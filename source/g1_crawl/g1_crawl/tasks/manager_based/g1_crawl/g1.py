@@ -199,7 +199,9 @@ def _default_animation_path() -> str:
     # # Compute repo root from this file
     this_dir = os.path.dirname(__file__)
     repo_root = os.path.abspath(os.path.join(this_dir, "../../../../../../"))
-    candidate = os.path.join(repo_root, "assets/animation_rc4.json")
+    # candidate = os.path.join(repo_root, "assets/animation_rc4.json")
+    candidate = os.path.join(repo_root, "assets/animation_mocap_rc0.json")
+
 
     return candidate
 
@@ -207,17 +209,25 @@ def _default_animation_path() -> str:
 def load_animation_json(json_path: str | None = None) -> dict:
     """Load animation JSON containing qpos frames and metadata.
 
+    Supports both original animation format and new BVH-driven format with schema "gait_animation.v1".
+
     Returns dict with keys:
     - dt: float
     - nq: int
-        - nv: int
-    - qpos: torch.FloatTensor [T, nq] (CPU tensor)
-        - qvel: torch.FloatTensor [T, nv] (CPU tensor) if provided
+    - nv: int
+    - qpos: torch.FloatTensor [T, nq] (GPU tensor)
+    - qvel: torch.FloatTensor [T, nv] (GPU tensor) if provided
     - qpos_labels: list[str] | None
-        - qvel_labels: list[str] | None
+    - qvel_labels: list[str] | None
     - metadata: dict
     - base_meta: dict | None (with pos_indices, quat_indices)
     - joints_meta: list|dict mapping joint names to qpos indices
+    - nsite: int
+    - site_positions: torch.FloatTensor [T, nsite, 3] (GPU tensor) if provided
+    - sites_meta: dict
+    - contact_flags: torch.FloatTensor [T, K] (GPU tensor) if provided
+    - contact_order: list[str] if provided
+    - contact_threshold_m: float if provided
     - num_frames: int
     - json_path: str
     """
@@ -228,6 +238,14 @@ def load_animation_json(json_path: str | None = None) -> dict:
     with open(path, "r") as f:
         data = json.load(f)
 
+    # Detect file type: animation vs pose
+    if "poses" in data and "schema" not in data:
+        raise ValueError("Pose JSON files are not supported by this function. Use a different loader for pose files.")
+    
+    # Check for schema to identify new format
+    schema = data.get("schema", None)
+    is_new_format = schema == "gait_animation.v1"
+    
     if "dt" in data:
         dt = float(data["dt"])
     elif "fps" in data and data["fps"]:
@@ -238,6 +256,7 @@ def load_animation_json(json_path: str | None = None) -> dict:
     nq = int(data.get("nq", 0)) or None
     nv = int(data.get("nv", 0)) or None
 
+    # Handle different qpos field names
     if "qpos" in data:
         qpos_list = data["qpos"]
     elif "frames" in data:
@@ -253,6 +272,7 @@ def load_animation_json(json_path: str | None = None) -> dict:
         nq = qpos_tensor.shape[1]
     elif nq is None:
         nq = qpos_tensor.shape[1]
+    
     # Optional velocities: accept keys "qvel" or "vel_frames"
     qvel_tensor = None
     if "qvel" in data and data["qvel"] is not None:
@@ -280,7 +300,8 @@ def load_animation_json(json_path: str | None = None) -> dict:
     qvel_labels = data.get("qvel_labels", None) or metadata.get("qvel_labels", None)
     base_meta = metadata.get("base", None)
     joints_meta = metadata.get("joints", {}) or {}
-    # Sites metadata and positions (optional)
+    
+    # Sites metadata and positions (optional - only in new format)
     sites_meta = metadata.get("sites", {}) or {}
     nsite = int(data.get("nsite", 0) or sites_meta.get("nsite", 0) or 0)
     site_positions_tensor = None
@@ -296,34 +317,36 @@ def load_animation_json(json_path: str | None = None) -> dict:
             except Exception:
                 site_positions_tensor = None
 
-    # Required per-frame contact flags: [T, K] with order specified in metadata.contact.order
-    if "contact_flags" not in data or data["contact_flags"] is None:
-        raise RuntimeError("Animation JSON missing required 'contact_flags' array")
-    cf_list = data["contact_flags"]
-    cf_tensor = torch.tensor(cf_list, dtype=torch.float32, device="cpu")
-    if cf_tensor.ndim != 2 or int(cf_tensor.shape[0]) != int(T):
-        raise RuntimeError("contact_flags must be a 2D array with shape [T, K] matching frame count T")
-    if not isinstance(metadata, dict) or "contact" not in metadata or metadata["contact"] is None:
-        raise RuntimeError("Animation JSON missing required 'metadata.contact' block")
-    contact_meta = metadata["contact"]
-    if not isinstance(contact_meta, dict):
-        raise RuntimeError("metadata.contact must be a dict")
-    if "order" not in contact_meta or contact_meta["order"] is None:
-        raise RuntimeError("metadata.contact.order is required and must list contact labels")
-    contact_order = contact_meta["order"]
-    if not isinstance(contact_order, (list, tuple)) or len(contact_order) == 0:
-        raise RuntimeError("metadata.contact.order must be a non-empty list")
-    if int(cf_tensor.shape[1]) != int(len(contact_order)):
-        raise RuntimeError(
-            f"contact_flags column count {int(cf_tensor.shape[1])} does not match metadata.contact.order length {int(len(contact_order))}"
-        )
-    if "threshold_m" not in contact_meta or contact_meta["threshold_m"] is None:
-        raise RuntimeError("metadata.contact.threshold_m is required")
-    try:
-        contact_threshold_m = float(contact_meta["threshold_m"])
-    except Exception:
-        raise RuntimeError("metadata.contact.threshold_m must be a float")
-    contact_flags_tensor = cf_tensor
+    # Contact flags (optional - only in new format)
+    contact_flags_tensor = None
+    contact_order = None
+    contact_threshold_m = None
+    
+    if "contact_flags" in data and data["contact_flags"] is not None:
+        cf_list = data["contact_flags"]
+        cf_tensor = torch.tensor(cf_list, dtype=torch.float32, device="cpu")
+        if cf_tensor.ndim != 2 or int(cf_tensor.shape[0]) != int(T):
+            print(f"[WARN] contact_flags shape mismatch: expected [T, K], got {cf_tensor.shape}")
+            cf_tensor = None
+        
+        if cf_tensor is not None:
+            contact_meta = metadata.get("contact", {})
+            if isinstance(contact_meta, dict):
+                contact_order = contact_meta.get("order", ["FL", "FR", "RL", "RR"])
+                contact_threshold_m = contact_meta.get("threshold_m", 0.01)
+                
+                # Validate contact order matches contact flags width
+                if isinstance(contact_order, (list, tuple)) and len(contact_order) > 0:
+                    if int(cf_tensor.shape[1]) != int(len(contact_order)):
+                        print(f"[WARN] contact_flags column count {int(cf_tensor.shape[1])} does not match contact.order length {int(len(contact_order))}")
+                        contact_order = [f"contact_{i}" for i in range(int(cf_tensor.shape[1]))]
+                else:
+                    contact_order = [f"contact_{i}" for i in range(int(cf_tensor.shape[1]))]
+            else:
+                contact_order = [f"contact_{i}" for i in range(int(cf_tensor.shape[1]))]
+                contact_threshold_m = 0.01
+            
+            contact_flags_tensor = cf_tensor
 
     # Normalize base world x/y so the animation starts at the origin.
     # If base position indices are provided, subtract the first frame's x/y from all frames.
@@ -368,9 +391,9 @@ def load_animation_json(json_path: str | None = None) -> dict:
         "nsite": int(nsite),
         "site_positions": site_positions_tensor,
         "sites_meta": sites_meta,
-        "contact_flags": contact_flags_tensor if contact_flags_tensor is not None else None,
-        "contact_order": list(contact_order) if contact_order is not None else None,
-        "contact_threshold_m": float(contact_threshold_m) if contact_threshold_m is not None else None,
+        "contact_flags": contact_flags_tensor,
+        "contact_order": contact_order,
+        "contact_threshold_m": contact_threshold_m,
         "num_frames": int(T),
         "json_path": path,
     }
@@ -379,15 +402,26 @@ def load_animation_json(json_path: str | None = None) -> dict:
 # ===== Animation helpers (moved from events.py) =====
 from isaaclab.assets import Articulation  # type: ignore  # for type hints
 
-_ANIM_CACHE: dict | None = None
+# Cache for multiple animations by path
+_ANIM_CACHE: dict[str, dict] = {}
 
 
 def get_animation(json_path: str | None = None) -> dict:
-    """Return cached animation dict; loads once via load_animation_json."""
+    """Return cached animation dict; loads once per unique path via load_animation_json."""
     global _ANIM_CACHE
-    if _ANIM_CACHE is None:
-        _ANIM_CACHE = load_animation_json(json_path)
-    return _ANIM_CACHE
+    
+    # Use default path if none provided
+    if json_path is None:
+        json_path = _default_animation_path()
+    
+    # Return cached animation if available
+    if json_path in _ANIM_CACHE:
+        return _ANIM_CACHE[json_path]
+    
+    # Load and cache the animation
+    anim_data = load_animation_json(json_path)
+    _ANIM_CACHE[json_path] = anim_data
+    return anim_data
 
 
 def build_joint_index_map(asset: Articulation, joints_meta, qpos_labels):
