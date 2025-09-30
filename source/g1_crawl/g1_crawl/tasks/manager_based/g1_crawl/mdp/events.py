@@ -5,6 +5,8 @@ import torch
 import time
 import numpy as np
 from typing import TYPE_CHECKING, Literal
+import os
+import json
 
 import carb
 import omni.physics.tensors.impl.api as physx
@@ -113,7 +115,7 @@ def visualize_applied_velocities(
     arrowhead_length: float = 0.3,
     arrowhead_angle: float = 25.0,
     arrow_color_override: tuple[float, float, float, float] | None = None,
-    print_debug_info: bool = True
+    print_debug_info: bool = False
 ):
     """
     Visualize applied velocities as colored arrows using Isaac Sim's debug drawing interface.
@@ -333,6 +335,114 @@ def reset_root_state_to_pose(
     asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
     asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
 
+
+# ===== Pose JSON-based joint reset =====
+def _load_pose_from_json_events(json_path: str) -> dict:
+    """Load pose entry from JSON file (same format used in rewards).
+
+    Expected structure:
+    {"poses": [ {"joints": {...}, "base_pos": [x,y,z], "base_rpy": [r,p,y]}, ... ]}
+    Returns the first pose entry dict. Fails loudly if required fields are missing.
+    """
+    # Resolve project root relative to this file (mirrors rewards.py logic)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../.."))
+    full_path = os.path.join(project_root, json_path)
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"Pose JSON not found at: {full_path}")
+    with open(full_path, "r") as f:
+        data = json.load(f)
+    if "poses" not in data or len(data["poses"]) == 0:
+        raise ValueError(f"No poses found in {json_path}")
+    entry = data["poses"][0]
+    if not isinstance(entry.get("joints"), dict) or not entry.get("joints"):
+        raise ValueError(f"Pose JSON missing 'joints' map in first pose: {json_path}")
+    # base_pos/base_rpy are required for this reset method
+    if "base_pos" not in entry or "base_rpy" not in entry:
+        raise ValueError(f"Pose JSON must include 'base_pos' and 'base_rpy': {json_path}")
+    if len(entry["base_pos"]) != 3 or len(entry["base_rpy"]) != 3:
+        raise ValueError(f"'base_pos' and 'base_rpy' must be length-3 arrays: {json_path}")
+    return entry
+
+
+def _build_target_vector_from_pose_dict_events(asset: Articulation, pose: dict) -> torch.Tensor:
+    """Build target joint vector in `asset.joint_names` order. Fail if any joint missing."""
+    names = asset.joint_names
+    missing = [n for n in names if n not in pose]
+    if len(missing) > 0:
+        # Fail loudly; caller should ensure pose JSON covers all joints
+        sample = ", ".join(missing[:8])
+        more = "..." if len(missing) > 8 else ""
+        raise KeyError(f"Pose dict missing joint keys: {sample}{more}")
+    values = [pose[n] for n in names]
+    return torch.tensor(values, dtype=asset.data.joint_pos.dtype, device=asset.data.joint_pos.device)
+
+
+def reset_to_pose_json(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    json_path: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    pose_noise_range: dict[str, tuple[float, float]] | None = None,
+    velocity_noise_range: dict[str, tuple[float, float]] | None = None,
+):
+    """Reset robot to default root state and set joint positions from a pose JSON.
+
+    - Root pose/velocity are set to the articulation's default root state.
+    - Joint positions are taken from `json_path` in the same format used by rewards.py pose helpers.
+    - Joint velocities are zeroed.
+    - Fails loudly if any joint is missing in the pose JSON.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    device = asset.device
+
+    # Load full pose entry (joints + base_pos + base_rpy)
+    entry = _load_pose_from_json_events(json_path)
+    joints_map = entry["joints"]
+    base_pos = entry["base_pos"]
+    base_rpy = entry["base_rpy"]
+
+    # Prepare root state from defaults, then overwrite pos/orient from JSON
+    num_envs = len(env_ids)
+    root_state = asset.data.default_root_state[env_ids].clone()
+    env_origins = env.scene.env_origins[env_ids].to(device=device)
+    pos_t = torch.tensor(base_pos, device=device, dtype=root_state.dtype).view(1, 3).expand(num_envs, -1)
+    # Euler -> quaternion (roll, pitch, yaw)
+    roll = torch.full((num_envs,), float(base_rpy[0]), device=device, dtype=root_state.dtype)
+    pitch = torch.full((num_envs,), float(base_rpy[1]), device=device, dtype=root_state.dtype)
+    yaw = torch.full((num_envs,), float(base_rpy[2]), device=device, dtype=root_state.dtype)
+    quat = math_utils.quat_from_euler_xyz(roll, pitch, yaw).to(dtype=root_state.dtype)
+
+    # Overwrite root pose and zero velocities
+    root_state[:, 0:3] = env_origins + pos_t
+    root_state[:, 3:7] = quat
+    root_state[:, 7:13] = 0.0
+
+    # Optional root pose noise (position + orientation)
+    if pose_noise_range is not None:
+        range_list = [pose_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=device)
+        rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        # position noise
+        root_state[:, 0:3] = root_state[:, 0:3] + rand_samples[:, 0:3]
+        # orientation noise (compose delta)
+        orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
+        root_state[:, 3:7] = math_utils.quat_mul(root_state[:, 3:7], orientations_delta)
+
+    # Optional root velocity noise (linear + angular)
+    if velocity_noise_range is not None:
+        range_list = [velocity_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=device)
+        rand_vel = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        root_state[:, 7:13] = root_state[:, 7:13] + rand_vel
+    asset.write_root_pose_to_sim(root_state[:, :7], env_ids=env_ids)
+    asset.write_root_velocity_to_sim(root_state[:, 7:], env_ids=env_ids)
+
+    # Map joint targets and write joint state (zero velocities)
+    target_vec = _build_target_vector_from_pose_dict_events(asset, joints_map)
+    joint_pos = asset.data.default_joint_pos[env_ids].clone()
+    joint_pos[:, :] = target_vec.view(1, -1).expand(num_envs, -1)
+    joint_vel = torch.zeros_like(joint_pos, device=device)
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
 # ===== Animation-based reset helpers and event =====
 from ..g1 import get_animation

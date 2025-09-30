@@ -211,14 +211,13 @@ class EventCfg:
         },
     )
     # reset
-    # Replace uniform base reset with animation-based reset
+    # Reset joints directly to a target pose from JSON (no animation)
     reset_base = EventTerm(
-        func=mdp.reset_from_animation,
+        func=mdp.reset_to_pose_json,
         mode="reset",
         params={
-            # Specify different animation for reset (e.g., transition animation)
-            "json_path": "assets/animation_mocap_rc0.json",  # Change this to your desired animation
-            # Small random offsets on root pose at reset (position in meters, angles in radians)
+            "json_path": "assets/stand-pose-rc2.json",
+            # Optional noise similar to reset_from_animation
             "pose_noise_range": {
                 "x": (-0.05, 0.05),
                 "y": (-0.05, 0.05),
@@ -227,11 +226,10 @@ class EventCfg:
                 "pitch": (-0.10, 0.10),
                 "yaw": (-0.10, 0.10),
             },
-            # Small random root velocity at reset (linear m/s, angular rad/s)
             "velocity_noise_range": {
                 "x": (-0.20, 0.20),
                 "y": (-0.20, 0.20),
-                "z": (-0.2, 0.2),
+                "z": (-0.20, 0.20),
                 "roll": (-0.30, 0.30),
                 "pitch": (-0.30, 0.30),
                 "yaw": (-0.30, 0.30),
@@ -241,7 +239,28 @@ class EventCfg:
     # reset_base = EventTerm(
     #     func=mdp.reset_from_animation,
     #     mode="reset",
-    #     params={},
+    #     params={
+    #         # Specify different animation for reset (e.g., transition animation)
+    #         "json_path": "assets/animation_mocap_rc0.json",  # Change this to your desired animation
+    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
+    #         "pose_noise_range": {
+    #             "x": (-0.05, 0.05),
+    #             "y": (-0.05, 0.05),
+    #             "z": (-0.05, 0.05),
+    #             "roll": (-0.10, 0.10),
+    #             "pitch": (-0.10, 0.10),
+    #             "yaw": (-0.10, 0.10),
+    #         },
+    #         # Small random root velocity at reset (linear m/s, angular rad/s)
+    #         "velocity_noise_range": {
+    #             "x": (-0.20, 0.20),
+    #             "y": (-0.20, 0.20),
+    #             "z": (-0.2, 0.2),
+    #             "roll": (-0.30, 0.30),
+    #             "pitch": (-0.30, 0.30),
+    #             "yaw": (-0.30, 0.30),
+    #         },
+    #     },
     # )
 
 
@@ -251,11 +270,11 @@ class EventCfg:
         interval_range_s=(5,10),
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
-@configclass
-class CurriculumCfg:
-    """Curriculum terms for the MDP."""
+# @configclass
+# class CurriculumCfg:
+#     """Curriculum terms for the MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
+#     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
 # def override_value(env, env_ids, data, value, num_steps):
 #         if env.common_step_counter > num_steps:
 #             return value
@@ -286,41 +305,75 @@ class CurriculumCfg:
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
+    lin_vel_l2 = RewTerm(func=mdp.lin_vel_l2, weight=-1.0)
+    ang_vel_l2 = RewTerm(func=mdp.ang_vel_l2, weight=-1.0)
 
-    #follow commands (base YZ plane and roll about X)
-    # Note: Boolean commands don't have velocity tracking rewards
-    # track_lin_vel_yz_exp = RewTerm(
-    #     func=mdp.track_lin_vel_yz_base_exp,
-    #     weight=2.0,
-    #     params={"command_name": "boolean_command", "std": 0.25},
-    # )
-    # track_ang_vel_x_exp = RewTerm(
-    #     func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "boolean_command", "std": 0.25}
-    # )
-    # flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.2)
-    
-    
-    # # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
-    
-    # base_height_l2 = RewTerm(
-    #     func=mdp.base_height_l2,
-    #     weight=-.1,
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-.5)
+
+    # Orientation tied to the boolean command: crawl(0) vs stand(1)
+    # - Negative L2 penalty (switches target based on command)
+    # commanded_orientation_l2_penalty = RewTerm(
+    #     func=mdp.command_based_orientation_l2_penalty,
+    #     weight=-0.25,
     #     params={
-    #         "target_height": 0.22,
-    #         "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
-    #         # "sensor_cfg": SceneEntityCfg("height_scanner"),
+    #         "command_name": "boolean_command",
     #     },
     # )
 
-    # Command-based joint deviation penalty
+    # # - Exponential proximity bonus with per-branch stds
+    # commanded_orientation_bonus = RewTerm(
+    #     func=mdp.command_based_orientation_bonus_exp,
+    #     weight=1.25,
+    #     params={
+    #         "command_name": "boolean_command",
+    #         "std_crawl": 0.1,
+    #         "std_stand": 0.1,
+    #     },
+    # )
+
+    base_height_l2 = RewTerm(
+        func=mdp.base_height_l2,
+        weight=-.2,
+        params={
+            "target_height": 0.78,
+            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+        },
+    )
+
+    # command_joint_deviation_all = RewTerm(
+    #     func=mdp.command_based_joint_deviation_l1,
+    #     weight=-0.2,
+    #     params={
+    #         "command_name": "boolean_command",
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "command_0_pose_path": "assets/stand-pose.json",
+    #         "command_1_pose_path": "assets/stand-pose.json",
+    #     },
+    # )
+    
+    # # Bonus for being close to command-based goal joint positions
+    # command_pose_proximity_bonus = RewTerm(
+    #     func=mdp.command_based_pose_proximity_bonus_exp,
+    #     weight=1.0,
+    #     params={
+    #         "command_name": "boolean_command",
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "std": 0.1,  # Adjust this value: smaller = sharper falloff, larger = more forgiving
+    #         "command_0_pose_path": "assets/stand-pose.json",
+    #         "command_1_pose_path": "assets/stand-pose.json",
+    #     },
+    # )
+    
+
+    # # Command-based joint deviation penalty
     command_joint_deviation_all = RewTerm(
         func=mdp.command_based_joint_deviation_l1,
-        weight=-0.2,
+        weight=-1,
         params={
             "command_name": "boolean_command",
             "asset_cfg": SceneEntityCfg("robot"),
-            "command_0_pose_path": "assets/crawl-pose.json",
-            "command_1_pose_path": "assets/stand-pose.json",
+            "command_0_pose_path": "assets/stand-pose-rc2.json",
+            "command_1_pose_path": "assets/stand-pose-rc2.json",
         },
     )
     
@@ -332,8 +385,8 @@ class RewardsCfg:
             "command_name": "boolean_command",
             "asset_cfg": SceneEntityCfg("robot"),
             "std": 0.1,  # Adjust this value: smaller = sharper falloff, larger = more forgiving
-            "command_0_pose_path": "assets/crawl-pose.json",
-            "command_1_pose_path": "assets/stand-pose.json",
+            "command_0_pose_path": "assets/stand-pose-rc2.json",
+            "command_1_pose_path": "assets/stand-pose-rc2.json",
         },
     )
     
@@ -352,29 +405,32 @@ class RewardsCfg:
     #regulatorization
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-    bellyhead_drag_penalty = RewTerm(
-        func=mdp.undesired_contacts,
-        weight=-5.0,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names= "torso_link",
-            ),
-            "threshold": 1.0,  # in Newtons (normal force magnitude)
-        },
-    )
+    # bellyhead_drag_penalty = RewTerm(
+    #     func=mdp.undesired_contacts,
+    #     weight=-5.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names= "torso_link",
+    #         ),
+    #         "threshold": 1.0,  # in Newtons (normal force magnitude)
+    #     },
+    # )
 
-    undesired_body_contact_penalty = RewTerm(
-        func=mdp.undesired_contacts,
-        weight=-2.0,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names="^(?!.*ankle_roll_link|.*wrist_link|torso_link).*",
-            ),
-            "threshold": 1.0,  # in Newtons (normal force magnitude)
-        },
-    )
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+
+
+    # undesired_body_contact_penalty = RewTerm(
+    #     func=mdp.undesired_contacts,
+    #     weight=-2.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names="^(?!.*ankle_roll_link|.*wrist_link|torso_link).*",
+    #         ),
+    #         "threshold": 1.0,  # in Newtons (normal force magnitude)
+    #     },
+    # )
 
     slippage = RewTerm(
         func=mdp.feet_slide, 
@@ -385,38 +441,38 @@ class RewardsCfg:
         },
     )
 
-    both_feet_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-.5,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-        },
-    )
+    # both_feet_air = RewTerm(
+    #     func=mdp.both_feet_air,
+    #     weight=-.5,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
     
 
-    both_hand_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-0.5,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wrist_link"),
-        },
-    )
+    # both_hand_air = RewTerm(
+    #     func=mdp.both_feet_air,
+    #     weight=-0.5,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wrist_link"),
+    #     },
+    # )
 
-    both_left_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-0.1,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_wrist_link", "left_ankle_roll_link"]),
-        },
-    )
+    # both_left_air = RewTerm(
+    #     func=mdp.both_feet_air,
+    #     weight=-0.1,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_wrist_link", "left_ankle_roll_link"]),
+    #     },
+    # )
 
-    both_right_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-0.1,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_wrist_link", "right_ankle_roll_link"]),
-        },
-    )
+    # both_right_air = RewTerm(
+    #     func=mdp.both_feet_air,
+    #     weight=-0.1,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_wrist_link", "right_ankle_roll_link"]),
+    #     },
+    # )
 
 
 @configclass
@@ -424,6 +480,10 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    base_contact = DoneTerm(
+        func=mdp.illegal_contact,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
+    )
 
 @configclass
 class G1CrawlTransitionEnvCfg(ManagerBasedRLEnvCfg):

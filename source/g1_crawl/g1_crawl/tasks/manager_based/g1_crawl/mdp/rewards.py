@@ -666,6 +666,198 @@ def align_projected_gravity_plus_x_l2(
     return 1.0 - 0.5 * dist_sq
 
 
+def flat_orientation_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize non-flat base orientation using L2 squared kernel.
+
+    This is computed by penalizing the xy-components of the projected gravity vector.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+
+def flat_orientation_bonus_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exponential bonus for flat base orientation using projected gravity xy.
+
+    reward = exp(- ||g_b.xy||^2 / std^2), bounded in (0, 1].
+
+    Args:
+        env: RL environment.
+        std: Standard deviation controlling falloff (must be > 0).
+        asset_cfg: Scene entity for the robot asset.
+
+    Returns:
+        Tensor of shape (num_envs,) with bonuses in [0, 1].
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_xy = asset.data.projected_gravity_b[:, :2]
+    std_val = float(std)
+    if std_val <= 0.0:
+        raise RuntimeError("flat_orientation_bonus_exp requires std > 0")
+    dist_sq = torch.sum(torch.square(g_xy), dim=1)
+    return torch.exp(-dist_sq / (std_val ** 2))
+
+
+def flat_orientation_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward-style mapping for flat orientation.
+
+    Converts the flat-orientation penalty into a bounded reward similar to
+    :func:`align_projected_gravity_plus_x_l2` by mapping
+    reward = 1 - 0.5 * || g_b.xy ||^2.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_xy = asset.data.projected_gravity_b[:, :2]
+    dist_sq = torch.sum(torch.square(g_xy), dim=1)
+    return 1.0 - 0.5 * dist_sq
+
+
+def command_based_orientation_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    scale_crawl: float = 1.0,
+    scale_stand: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Command-based orientation reward with consistent positive semantics.
+
+    - If command == 0 (crawl): use align_projected_gravity_plus_x_l2 (reward style in [-1, 1]).
+    - If command == 1 (stand): use flat_orientation_reward (reward style similar bounds).
+
+    The output is a reward-like value that can be scaled by the outer RewTerm ``weight``.
+    Optional ``scale_crawl``/``scale_stand`` let you rebalance branches without changing sign.
+    """
+    # Command mask (num_envs,)
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+
+    crawl_term = align_projected_gravity_plus_x_l2(env, asset_cfg=asset_cfg)
+    stand_term = flat_orientation_reward(env, asset_cfg=asset_cfg)
+
+    mask = (command_values > 0.5)
+    # Select weighted terms per env
+    out = torch.where(mask, scale_stand * stand_term, scale_crawl * crawl_term)
+    return out
+
+
+def command_based_orientation_l2_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Command-aware L2 penalty for orientation.
+
+    - Crawl (command==0): penalty = || g_b - [1,0,0] ||^2
+    - Stand (command==1): penalty = || g_b.xy ||^2
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (N, 3)
+
+    target_crawl = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    dist_sq_crawl = torch.sum(torch.square(g_b - target_crawl), dim=1)
+
+    g_xy = g_b[:, :2]
+    dist_sq_stand = torch.sum(torch.square(g_xy), dim=1)
+
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+    mask = (command_values > 0.5)
+    return torch.where(mask, dist_sq_stand, dist_sq_crawl)
+
+
+def command_based_orientation_bonus_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std_crawl: float,
+    std_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exponential bonus close to command-specific orientation target.
+
+    Thin wrapper around :func:`command_based_orientation_proximity_exp` for naming consistency.
+    """
+    return command_based_orientation_proximity_exp(
+        env,
+        command_name=command_name,
+        std_crawl=std_crawl,
+        std_stand=std_stand,
+        asset_cfg=asset_cfg,
+    )
+
+def command_based_orientation_proximity_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std_crawl: float,
+    std_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Smooth proximity bonus to the command-specific orientation target using an exponential kernel.
+
+    - Crawl (command==0): proximity to +X target in base frame: exp(-||g_b - [1,0,0]||^2 / std_crawl^2)
+    - Stand (command==1): proximity to flat: exp(-||g_b.xy||^2 / std_stand^2)
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (N, 3)
+
+    # Validate stds
+    if float(std_crawl) <= 0.0 or float(std_stand) <= 0.0:
+        raise RuntimeError("command_based_orientation_proximity_exp requires std_crawl>0 and std_stand>0")
+
+    # Compute both branch rewards
+    target_crawl = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    dist_sq_crawl = torch.sum(torch.square(g_b - target_crawl), dim=1)
+    prox_crawl = torch.exp(-dist_sq_crawl / (float(std_crawl) ** 2))
+
+    g_xy = g_b[:, :2]
+    dist_sq_stand = torch.sum(torch.square(g_xy), dim=1)
+    prox_stand = torch.exp(-dist_sq_stand / (float(std_stand) ** 2))
+
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+    mask = (command_values > 0.5)
+    return torch.where(mask, prox_stand, prox_crawl)
+
+
+def command_based_orientation_success_bonus(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    tol_crawl: float,
+    tol_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Sharp success bonus when orientation is within a tolerance of the command target.
+
+    - Crawl (command==0): success if ||g_b - [1,0,0]|| <= tol_crawl
+    - Stand (command==1): success if ||g_b.xy|| <= tol_stand
+    Returns 1.0 on success else 0.0, to be scaled by the RewTerm weight.
+    """
+    if float(tol_crawl) <= 0.0 or float(tol_stand) <= 0.0:
+        raise RuntimeError("command_based_orientation_success_bonus requires tol_crawl>0 and tol_stand>0")
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (N, 3)
+
+    target_crawl = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    err_crawl = torch.linalg.norm(g_b - target_crawl, dim=1)
+    ok_crawl = (err_crawl <= float(tol_crawl)).to(dtype=g_b.dtype)
+
+    err_stand = torch.linalg.norm(g_b[:, :2], dim=1)
+    ok_stand = (err_stand <= float(tol_stand)).to(dtype=g_b.dtype)
+
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+    mask = (command_values > 0.5)
+    return torch.where(mask, ok_stand, ok_crawl)
+
+
 def animation_contact_flags_mismatch_l1(
     env: ManagerBasedRLEnv,
     sensor_cfg: SceneEntityCfg,

@@ -10,8 +10,8 @@ import nanoid as nano
 
 # Experiment configuration
 TASK_NAME = "g1-crawl-proc"
-EXPERIMENT_NAME = "g1_crawl_proc_sweep_v7"  
-START_FROM_RUN = 4  # Set to 1 to start from beginning, or higher to resume from a specific run
+EXPERIMENT_NAME = "g1_crawl_transition_sweep_v1"  
+START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
 # PARAMETER SWEEP CONFIGURATION - CENTRALIZED
@@ -20,8 +20,12 @@ START_FROM_RUN = 4  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.events.push_robot.interval_range_s": ["[1000,1000]", "[5,10]"],
-        "env.commands.base_velocity.ranges.lin_vel_z": ["[0.3,1.5]", "[0.0, 1.5]"],
+        "env.rewards.flat_orientation_l2.weight": [-0.5, -0.1],
+        "env.rewards.base_height_l2.weight": [-0.5,-0.2, 0],
+        "env.rewards.command_based_joint_deviation_l1.weight": [-5, -1.],
+        "env.rewards.command_based_pose_proximity_bonus_exp.weight": [1.,5., 0.],
+
+
     },
 
     # Grouped parameter sets: each entry is a list of dicts. Within a list,
