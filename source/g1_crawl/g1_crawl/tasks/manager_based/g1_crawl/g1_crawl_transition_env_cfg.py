@@ -526,6 +526,8 @@ class G1CrawlTransitionEnvCfg(ManagerBasedRLEnvCfg):
         # Set terrain to plane and disable height scanning
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
+        self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
+
         # self.scene.height_scanner = None
 
         # if getattr(self.curriculum, "terrain_levels", None) is not None:

@@ -9,8 +9,8 @@ import nanoid as nano
 
 
 # Experiment configuration
-TASK_NAME = "g1-crawl-proc"
-EXPERIMENT_NAME = "g1_crawl_transition_sweep_v1"  
+TASK_NAME = "g1-crawl-transition"
+EXPERIMENT_NAME = "g1_crawl_transition_sweep_v3"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -22,8 +22,8 @@ SWEEP_CONFIG = {
     "SWEEP_PARAMS": {
         "env.rewards.flat_orientation_l2.weight": [-0.5, -0.1],
         "env.rewards.base_height_l2.weight": [-0.5,-0.2, 0],
-        "env.rewards.command_based_joint_deviation_l1.weight": [-5, -1.],
-        "env.rewards.command_based_pose_proximity_bonus_exp.weight": [1.,5., 0.],
+        "env.rewards.command_joint_deviation_all.weight": [-5, -1.],
+        "env.rewards.command_pose_proximity_bonus.weight": [1.,5., 0.],
 
 
     },
