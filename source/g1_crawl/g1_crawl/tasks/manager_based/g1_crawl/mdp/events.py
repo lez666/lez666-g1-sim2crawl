@@ -411,6 +411,7 @@ def reset_to_pose_json(
     base_pos = entry["base_pos"]
     base_rpy = entry["base_rpy"]
 
+
     # ===== ROOT STATE RESET (following reset_root_state_uniform pattern) =====
     num_envs = len(env_ids)
     root_states = asset.data.default_root_state[env_ids].clone()
@@ -450,10 +451,27 @@ def reset_to_pose_json(
     asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
 
     # ===== JOINT STATE RESET (following reset_joints_by_scale pattern) =====
+    # cast env_ids to allow broadcasting when joint_ids are specified
+    if asset_cfg.joint_ids != slice(None):
+        iter_env_ids = env_ids[:, None]
+    else:
+        iter_env_ids = env_ids
+    
     # Get joint positions from JSON
     target_vec = _build_target_vector_from_pose_dict_events(asset, joints_map)
-    joint_pos = target_vec.view(1, -1).expand(num_envs, -1).clone()
+    
+    # # Handle joint_ids: if specific joints are requested, select only those
+    if asset_cfg.joint_ids != slice(None):
+        # Select only the specified joints from the full target vector
+        joint_pos = target_vec[asset_cfg.joint_ids].view(1, -1).expand(num_envs, -1).clone()
+    else:
+        # Use all joints
+        joint_pos = target_vec.view(1, -1).expand(num_envs, -1).clone()
+    
     joint_vel = torch.zeros_like(joint_pos, device=device)
+
+    # joint_pos = asset.data.default_joint_pos[iter_env_ids, asset_cfg.joint_ids].clone()
+    # joint_vel = asset.data.default_joint_vel[iter_env_ids, asset_cfg.joint_ids].clone()
     
     # Apply position scaling if specified
     if position_range is not None:
@@ -464,15 +482,15 @@ def reset_to_pose_json(
         joint_vel *= math_utils.sample_uniform(*joint_velocity_range, joint_vel.shape, device)
     
     # Clamp joint pos to limits
-    joint_pos_limits = asset.data.soft_joint_pos_limits[env_ids]
+    joint_pos_limits = asset.data.soft_joint_pos_limits[iter_env_ids, asset_cfg.joint_ids]
     joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
     
     # Clamp joint vel to limits
-    joint_vel_limits = asset.data.soft_joint_vel_limits[env_ids]
+    joint_vel_limits = asset.data.soft_joint_vel_limits[iter_env_ids, asset_cfg.joint_ids]
     joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
     
     # Write joint state to sim
-    asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)
 
 # ===== Animation-based reset helpers and event =====
 from ..g1 import get_animation
