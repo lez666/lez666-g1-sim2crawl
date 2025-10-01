@@ -30,6 +30,26 @@ if TYPE_CHECKING:
 from ..g1 import get_animation, build_joint_index_map
 from .observations import compute_animation_phase_and_frame
 
+def both_feet_on_ground(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward when both feet are in contact with the ground.
+
+    This function rewards the agent when both feet are in contact with the ground, 
+    encouraging stable bipedal stance. Use with feet_slide penalty to discourage sliding.
+    
+    Args:
+        env: The environment instance.
+        sensor_cfg: Configuration for the contact sensor.
+
+    Returns:
+        1 if both feet are in contact, 0 otherwise.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # Check if feet are in contact using contact time
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    # Count feet in contact
+    both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
+    return both_feet_in_contact.float()
 
 def feet_air_time(
     env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float

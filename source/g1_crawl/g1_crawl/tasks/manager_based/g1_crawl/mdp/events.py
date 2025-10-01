@@ -82,6 +82,8 @@ def push_by_setting_velocity_with_viz(
     """
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    # Print the z (height) component of the root position for the selected envs
+    # print("Root pos_w z (height) for envs:", asset.data.root_pos_w[env_ids, 2])
 
     # velocities
     vel_w = asset.data.root_vel_w[env_ids]
@@ -382,15 +384,23 @@ def reset_to_pose_json(
     env_ids: torch.Tensor,
     json_path: str,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    pose_noise_range: dict[str, tuple[float, float]] | None = None,
-    velocity_noise_range: dict[str, tuple[float, float]] | None = None,
+    pose_range: dict[str, tuple[float, float]] | None = None,
+    velocity_range: dict[str, tuple[float, float]] | None = None,
+    position_range: tuple[float, float] | None = None,
+    joint_velocity_range: tuple[float, float] | None = None,
 ):
-    """Reset robot to default root state and set joint positions from a pose JSON.
+    """Reset robot to pose from JSON with optional noise/scaling for root and joints.
 
-    - Root pose/velocity are set to the articulation's default root state.
-    - Joint positions are taken from `json_path` in the same format used by rewards.py pose helpers.
-    - Joint velocities are zeroed.
-    - Fails loudly if any joint is missing in the pose JSON.
+    Root state (base):
+    - Root pose/velocity are set from the JSON file (base_pos + base_rpy)
+    - Optional uniform noise via `pose_range` and `velocity_range` (same as reset_root_state_uniform)
+    
+    Joint state:
+    - Joint positions are taken from `json_path` 
+    - Optional scaling via `position_range` (same as reset_joints_by_scale)
+    - Joint velocities default to zero unless `joint_velocity_range` is provided
+    - Joint positions/velocities are clamped to limits
+    - Fails loudly if any joint is missing in the pose JSON
     """
     asset: Articulation = env.scene[asset_cfg.name]
     device = asset.device
@@ -401,47 +411,67 @@ def reset_to_pose_json(
     base_pos = entry["base_pos"]
     base_rpy = entry["base_rpy"]
 
-    # Prepare root state from defaults, then overwrite pos/orient from JSON
+    # ===== ROOT STATE RESET (following reset_root_state_uniform pattern) =====
     num_envs = len(env_ids)
-    root_state = asset.data.default_root_state[env_ids].clone()
-    env_origins = env.scene.env_origins[env_ids].to(device=device)
-    pos_t = torch.tensor(base_pos, device=device, dtype=root_state.dtype).view(1, 3).expand(num_envs, -1)
-    # Euler -> quaternion (roll, pitch, yaw)
-    roll = torch.full((num_envs,), float(base_rpy[0]), device=device, dtype=root_state.dtype)
-    pitch = torch.full((num_envs,), float(base_rpy[1]), device=device, dtype=root_state.dtype)
-    yaw = torch.full((num_envs,), float(base_rpy[2]), device=device, dtype=root_state.dtype)
-    quat = math_utils.quat_from_euler_xyz(roll, pitch, yaw).to(dtype=root_state.dtype)
-
-    # Overwrite root pose and zero velocities
-    root_state[:, 0:3] = env_origins + pos_t
-    root_state[:, 3:7] = quat
-    root_state[:, 7:13] = 0.0
-
-    # Optional root pose noise (position + orientation)
-    if pose_noise_range is not None:
-        range_list = [pose_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+    root_states = asset.data.default_root_state[env_ids].clone()
+    
+    # Set base pose from JSON
+    pos_t = torch.tensor(base_pos, device=device, dtype=root_states.dtype).view(1, 3).expand(num_envs, -1)
+    roll = torch.full((num_envs,), float(base_rpy[0]), device=device, dtype=root_states.dtype)
+    pitch = torch.full((num_envs,), float(base_rpy[1]), device=device, dtype=root_states.dtype)
+    yaw = torch.full((num_envs,), float(base_rpy[2]), device=device, dtype=root_states.dtype)
+    quat = math_utils.quat_from_euler_xyz(roll, pitch, yaw).to(dtype=root_states.dtype)
+    
+    positions = env.scene.env_origins[env_ids] + pos_t
+    orientations = quat
+    
+    # Add pose noise if specified
+    if pose_range is not None:
+        range_list = [pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=device)
         rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
-        # position noise
-        root_state[:, 0:3] = root_state[:, 0:3] + rand_samples[:, 0:3]
-        # orientation noise (compose delta)
+        
+        positions = positions + rand_samples[:, 0:3]
         orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
-        root_state[:, 3:7] = math_utils.quat_mul(root_state[:, 3:7], orientations_delta)
-
-    # Optional root velocity noise (linear + angular)
-    if velocity_noise_range is not None:
-        range_list = [velocity_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        orientations = math_utils.quat_mul(orientations, orientations_delta)
+    
+    # Set velocities (zero or noise)
+    velocities = root_states[:, 7:13].clone()
+    velocities[:] = 0.0
+    
+    if velocity_range is not None:
+        range_list = [velocity_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=device)
-        rand_vel = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
-        root_state[:, 7:13] = root_state[:, 7:13] + rand_vel
-    asset.write_root_pose_to_sim(root_state[:, :7], env_ids=env_ids)
-    asset.write_root_velocity_to_sim(root_state[:, 7:], env_ids=env_ids)
+        rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        velocities = velocities + rand_samples
+    
+    # Write root state to sim
+    asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
+    asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
 
-    # Map joint targets and write joint state (zero velocities)
+    # ===== JOINT STATE RESET (following reset_joints_by_scale pattern) =====
+    # Get joint positions from JSON
     target_vec = _build_target_vector_from_pose_dict_events(asset, joints_map)
-    joint_pos = asset.data.default_joint_pos[env_ids].clone()
-    joint_pos[:, :] = target_vec.view(1, -1).expand(num_envs, -1)
+    joint_pos = target_vec.view(1, -1).expand(num_envs, -1).clone()
     joint_vel = torch.zeros_like(joint_pos, device=device)
+    
+    # Apply position scaling if specified
+    if position_range is not None:
+        joint_pos *= math_utils.sample_uniform(*position_range, joint_pos.shape, device)
+    
+    # Apply velocity scaling if specified
+    if joint_velocity_range is not None:
+        joint_vel *= math_utils.sample_uniform(*joint_velocity_range, joint_vel.shape, device)
+    
+    # Clamp joint pos to limits
+    joint_pos_limits = asset.data.soft_joint_pos_limits[env_ids]
+    joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
+    
+    # Clamp joint vel to limits
+    joint_vel_limits = asset.data.soft_joint_vel_limits[env_ids]
+    joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
+    
+    # Write joint state to sim
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
 # ===== Animation-based reset helpers and event =====

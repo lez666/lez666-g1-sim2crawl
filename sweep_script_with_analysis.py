@@ -10,7 +10,7 @@ import nanoid as nano
 
 # Experiment configuration
 TASK_NAME = "g1-crawl-transition"
-EXPERIMENT_NAME = "g1_crawl_transition_sweep_v3"  
+EXPERIMENT_NAME = "g1_crawl_transition_sweep_v4"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -20,10 +20,12 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.flat_orientation_l2.weight": [-0.5, -0.1],
-        "env.rewards.base_height_l2.weight": [-0.5,-0.2, 0],
-        "env.rewards.command_joint_deviation_all.weight": [-5, -1.],
-        "env.rewards.command_pose_proximity_bonus.weight": [1.,5., 0.],
+        # "env.rewards.flat_orientation_l2.weight": [-0.5, -0.1],
+        "env.rewards.base_height_l2.weight": [-0.2, -0.1],
+        "env.rewards.command_joint_deviation_upper.weight": [-0.5, -0.1],
+        "env.rewards.command_joint_deviation_lower.weight": [-1.5, -1.0],
+        "env.rewards.command_pose_proximity_bonus_upper.weight": [0.5, 0.1],
+        "env.rewards.command_pose_proximity_bonus_lower.weight": [1.5, 1.0],
 
 
     },
@@ -47,7 +49,7 @@ SWEEP_CONFIG = {
     # - All choices within a single group must set the same parameter keys.
     "SWEEP_PARAM_SETS": [
         # [
-        #     {"env.rewards.action_rate_l2.weight": -4e-3, "env.rewards.dof_torques_l2.weight":-4.0e-5},
+        #     {"env.rewards.command_joint_deviation_upper.weight": -4e-3, "env.rewards.dof_torques_l2.weight":-4.0e-5},
         #     {"env.rewards.action_rate_l2.weight": -1e-2, "env.rewards.dof_torques_l2.weight": -1.0e-4},
         # ],
     ],
