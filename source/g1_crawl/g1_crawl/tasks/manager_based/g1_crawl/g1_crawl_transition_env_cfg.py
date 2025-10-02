@@ -255,20 +255,20 @@ class EventCfg:
             "json_path": "assets/default-pose.json",
             # Root pose noise (position in meters, angles in radians)
             "pose_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
                 "z": (-0.1, 0.1),
-                # "roll": (-0.5, 0.5),
-                # "pitch": (-0.5, 0.5),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
                 # "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
-                "z": (-0.5, 0.5),
-                "roll": (-0.5, 0.5),
-                "pitch": (-0.5, 0.5),
-                "yaw": (-0.5, 0.5),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1),
             },
 
             # "pose_range": {
@@ -289,7 +289,7 @@ class EventCfg:
             #     "yaw": (-0.5, 0.5),
             # },
             # Joint position scaling (multiplies JSON pose values)
-            "position_range": (0.5, 1.5),
+            "position_range": (0.9, 1.1),
             # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
             "joint_velocity_range": (0.0, 0.0),
         },
@@ -403,7 +403,7 @@ class RewardsCfg:
     # Command-based joint deviation penalty - UPPER BODY (shoulders/arms) - lower weight
     command_joint_deviation_upper = RewTerm(
         func=mdp.command_based_joint_deviation_l1,
-        weight=-.2,
+        weight=-.1,
         params={
             "command_name": "boolean_command",
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_.*_joint", ".*_elbow_joint", ".*_wrist_.*_joint"]),
@@ -634,6 +634,7 @@ class G1CrawlTransitionEnvCfg(ManagerBasedRLEnvCfg):
 # 
         self.scene.robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = ["torso_link"]
 
         # update sensor update periods
         if self.scene.contact_forces is not None:

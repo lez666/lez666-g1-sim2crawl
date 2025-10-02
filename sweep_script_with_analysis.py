@@ -10,7 +10,7 @@ import nanoid as nano
 
 # Experiment configuration
 TASK_NAME = "g1-crawl-transition"
-EXPERIMENT_NAME = "g1_crawl_transition_sweep_v4"  
+EXPERIMENT_NAME = "g1_shamble_sweep_v2"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -21,12 +21,7 @@ SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
         # "env.rewards.flat_orientation_l2.weight": [-0.5, -0.1],
-        "env.rewards.base_height_l2.weight": [-0.2, -0.1],
-        "env.rewards.command_joint_deviation_upper.weight": [-0.5, -0.1],
-        "env.rewards.command_joint_deviation_lower.weight": [-1.5, -1.0],
-        "env.rewards.command_pose_proximity_bonus_upper.weight": [0.5, 0.1],
-        "env.rewards.command_pose_proximity_bonus_lower.weight": [1.5, 1.0],
-
+        "env.actions.joint_pos.use_default_offset": [False,True],
 
     },
 
@@ -49,8 +44,21 @@ SWEEP_CONFIG = {
     # - All choices within a single group must set the same parameter keys.
     "SWEEP_PARAM_SETS": [
         # [
-        #     {"env.rewards.command_joint_deviation_upper.weight": -4e-3, "env.rewards.dof_torques_l2.weight":-4.0e-5},
-        #     {"env.rewards.action_rate_l2.weight": -1e-2, "env.rewards.dof_torques_l2.weight": -1.0e-4},
+        #     {
+        #         "env.rewards.command_joint_deviation_hip_waist.params.command_0_pose_path": "assets/default-pose.json", 
+        #         "env.rewards.command_joint_deviation_hip_waist.params.command_1_pose_path": "assets/default-pose.json",
+        #         "env.rewards.command_joint_deviation_upper.params.command_0_pose_path": "assets/default-pose.json", 
+        #         "env.rewards.command_joint_deviation_upper.params.command_1_pose_path": "assets/default-pose.json",
+        #         "env.events.reset_robot.params.json_path": "assets/default-pose.json"
+        #     },
+        #     {
+        #         "env.rewards.command_joint_deviation_hip_waist.params.command_0_pose_path": "assets/stand-pose-rc2.json", 
+        #         "env.rewards.command_joint_deviation_hip_waist.params.command_1_pose_path": "assets/stand-pose-rc2.json",
+        #         "env.rewards.command_joint_deviation_upper.params.command_0_pose_path": "assets/stand-pose-rc2.json", 
+        #         "env.rewards.command_joint_deviation_upper.params.command_1_pose_path": "assets/stand-pose-rc2.json",
+        #         "env.events.reset_robot.params.json_path": "assets/stand-pose-rc2.json"
+        #     }
+
         # ],
     ],
 
