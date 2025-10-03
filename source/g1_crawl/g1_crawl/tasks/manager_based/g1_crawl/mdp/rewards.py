@@ -322,6 +322,42 @@ def command_based_joint_deviation_l1(
     total_deviation = torch.sum(deviations, dim=1)
     return total_deviation
 
+
+def pose_json_deviation_l1(
+    env: ManagerBasedRLEnv,
+    pose_path: str = "assets/default-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """L1 penalty for joint positions that deviate from a target pose defined in a JSON file.
+    
+    Simple single-pose version without command logic.
+    Note: Pose data is cached after first load to avoid repeated file I/O.
+    
+    Args:
+        env: RL environment.
+        pose_path: Path to pose JSON file.
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with L1 deviation penalties.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Load and build full target vector in joint order
+    target_full = _get_full_target_vector(pose_path, asset)
+
+    # Select the joints specified in asset_cfg
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_sel = target_full[asset_cfg.joint_ids]
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in pose_json_deviation_l1")
+
+    # Compute L1 deviation
+    deviations = torch.abs(joint_pos_sel - target_sel)
+    total_deviation = torch.sum(deviations, dim=1)
+    return total_deviation
+
 def animation_pose_similarity_l1(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

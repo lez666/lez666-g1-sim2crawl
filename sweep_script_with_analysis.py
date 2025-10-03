@@ -9,8 +9,8 @@ import nanoid as nano
 
 
 # Experiment configuration
-TASK_NAME = "g1-crawl-transition"
-EXPERIMENT_NAME = "g1_shamble_sweep_v2"  
+TASK_NAME = "g1-shamble"
+EXPERIMENT_NAME = "g1_shamble_sweep_v5"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -20,9 +20,8 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        # "env.rewards.flat_orientation_l2.weight": [-0.5, -0.1],
-        "env.actions.joint_pos.use_default_offset": [False,True],
-
+        "agent.algorithm.symmetry_cfg.use_mirror_loss": [True, False],
+        "env.events.push_robot.interval_range_s": [[1000.0,1000.0], [3.0, 5.0]],
     },
 
     # Grouped parameter sets: each entry is a list of dicts. Within a list,
@@ -43,23 +42,33 @@ SWEEP_CONFIG = {
     # - Parameters that appear in any grouped set MUST NOT also appear in SWEEP_PARAMS.
     # - All choices within a single group must set the same parameter keys.
     "SWEEP_PARAM_SETS": [
-        # [
-        #     {
-        #         "env.rewards.command_joint_deviation_hip_waist.params.command_0_pose_path": "assets/default-pose.json", 
-        #         "env.rewards.command_joint_deviation_hip_waist.params.command_1_pose_path": "assets/default-pose.json",
-        #         "env.rewards.command_joint_deviation_upper.params.command_0_pose_path": "assets/default-pose.json", 
-        #         "env.rewards.command_joint_deviation_upper.params.command_1_pose_path": "assets/default-pose.json",
-        #         "env.events.reset_robot.params.json_path": "assets/default-pose.json"
-        #     },
-        #     {
-        #         "env.rewards.command_joint_deviation_hip_waist.params.command_0_pose_path": "assets/stand-pose-rc2.json", 
-        #         "env.rewards.command_joint_deviation_hip_waist.params.command_1_pose_path": "assets/stand-pose-rc2.json",
-        #         "env.rewards.command_joint_deviation_upper.params.command_0_pose_path": "assets/stand-pose-rc2.json", 
-        #         "env.rewards.command_joint_deviation_upper.params.command_1_pose_path": "assets/stand-pose-rc2.json",
-        #         "env.events.reset_robot.params.json_path": "assets/stand-pose-rc2.json"
-        #     }
+        [
+            {
+                "env.rewards.pose_deviation_hip.weight": -0.5,
+                "env.rewards.pose_deviation_torso.weight": -0.1,
+                "env.rewards.base_height_l2.weight": -0.2,
+            },
+            {
+                "env.rewards.pose_deviation_hip.weight": -0.2,
+                "env.rewards.pose_deviation_torso.weight": -0.2,
+                "env.rewards.base_height_l2.weight": -0.1,
+            }
+        ],
+        [
+            {
+                "env.rewards.pose_deviation_hip.params.pose_path": "assets/default-pose.json", 
+                "env.rewards.pose_deviation_arms.params.pose_path": "assets/default-pose.json", 
+                "env.rewards.pose_deviation_torso.params.pose_path": "assets/default-pose.json", 
+                "env.events.reset_robot.params.json_path": "assets/default-pose.json"
+            },
+            {
+                "env.rewards.pose_deviation_hip.params.pose_path": "assets/stand-pose-rc2.json", 
+                "env.rewards.pose_deviation_arms.params.pose_path": "assets/stand-pose-rc2.json", 
+                "env.rewards.pose_deviation_torso.params.pose_path": "assets/stand-pose-rc2.json", 
+                "env.events.reset_robot.params.json_path": "assets/stand-pose-rc2.json"
+            }
 
-        # ],
+        ],
     ],
 
 }

@@ -63,8 +63,6 @@ def mirror_joint_tensor(original: torch.Tensor, mirrored: torch.Tensor, offset: 
     mirrored[..., invert_indices] = -mirrored[..., invert_indices]
     
 
-
-
 def mirror_observation_policy(obs):
     if obs is None:
         return obs
