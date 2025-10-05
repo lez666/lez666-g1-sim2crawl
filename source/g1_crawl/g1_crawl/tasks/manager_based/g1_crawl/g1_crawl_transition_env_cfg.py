@@ -341,7 +341,7 @@ class RewardsCfg:
     # # 2. LOCOMOTION REWARDS (Standing Mode Only)
     # # ============================================
     
-    # # Velocity tracking - only when standing
+    # Velocity tracking - only when standing
     # track_lin_vel_xy_exp_standing = RewTerm(
     #     func=mdp.track_lin_vel_xy_yaw_frame_exp_when_standing,
     #     weight=1.0,
@@ -419,7 +419,7 @@ class RewardsCfg:
 
     bellyhead_drag_penalty = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-5.0,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
