@@ -33,7 +33,7 @@ gym.register(
 )
 
 gym.register(
-    id="g1-crawl-transition",
+    id="g1-transition",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={

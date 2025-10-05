@@ -1069,3 +1069,205 @@ def feet_air_time_positive_biped(env, command_name: str, threshold: float, senso
     # no reward for zero command
     reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
     return reward
+
+
+# ============================================
+# Command-conditional locomotion rewards
+# ============================================
+
+def track_lin_vel_xy_yaw_frame_exp_when_standing(
+    env, std: float, command_name: str, boolean_command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward tracking of linear velocity commands only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 to encourage staying in place.
+    
+    Args:
+        env: Environment instance
+        std: Standard deviation for exponential kernel
+        command_name: Name of velocity command
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        Velocity tracking reward when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base reward
+    base_reward = track_lin_vel_xy_yaw_frame_exp_shamble(env, std=std, command_name=command_name, asset_cfg=asset_cfg)
+    
+    # Zero out when crawling
+    return base_reward * standing_mask.float()
+
+
+def track_ang_vel_z_world_exp_when_standing(
+    env, command_name: str, boolean_command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward tracking of angular velocity commands only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 to encourage staying in place.
+    
+    Args:
+        env: Environment instance
+        command_name: Name of velocity command
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        std: Standard deviation for exponential kernel
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        Angular velocity tracking reward when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base reward
+    base_reward = track_ang_vel_z_world_exp(env, command_name=command_name, std=std, asset_cfg=asset_cfg)
+    
+    # Zero out when crawling
+    return base_reward * standing_mask.float()
+
+
+def feet_air_time_positive_biped_when_standing(
+    env, velocity_command_name: str, boolean_command_name: str, threshold: float, sensor_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward long steps/gait quality only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0.
+    
+    Args:
+        env: Environment instance
+        velocity_command_name: Name of velocity command for gating
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        threshold: Air time threshold
+        sensor_cfg: Contact sensor configuration
+    
+    Returns:
+        Feet air time reward when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base reward
+    base_reward = feet_air_time_positive_biped(env, command_name=velocity_command_name, threshold=threshold, sensor_cfg=sensor_cfg)
+    
+    # Zero out when crawling
+    return base_reward * standing_mask.float()
+
+
+def both_feet_air_when_standing(env, boolean_command_name: str, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalize both feet in air only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 (no penalty).
+    
+    Args:
+        env: Environment instance
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        sensor_cfg: Contact sensor configuration
+    
+    Returns:
+        Both feet air penalty when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base penalty
+    base_penalty = both_feet_air(env, sensor_cfg=sensor_cfg)
+    
+    # Zero out when crawling
+    return base_penalty * standing_mask.float()
+
+
+def feet_slide_when_standing(
+    env, boolean_command_name: str, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize feet sliding only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 (no penalty).
+    
+    Args:
+        env: Environment instance
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        sensor_cfg: Contact sensor configuration
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        Feet slide penalty when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base penalty
+    base_penalty = feet_slide(env, sensor_cfg=sensor_cfg, asset_cfg=asset_cfg)
+    
+    # Zero out when crawling
+    return base_penalty * standing_mask.float()
+
+
+def base_height_l2(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 penalty for base height deviation from a fixed target height.
+    
+    Args:
+        env: Environment instance
+        target_height: Target height (meters)
+        asset_cfg: Robot asset configuration with body_names specified
+    
+    Returns:
+        L2 squared height error penalty
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # Z position
+    height_error = body_pos_w - target_height
+    return torch.sum(torch.square(height_error), dim=1)
+
+
+def base_height_l2_command_based(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_height_crawl: float,
+    target_height_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 penalty for base height deviation from command-based target.
+    
+    When crawling (command==0): target is target_height_crawl
+    When standing (command==1): target is target_height_stand
+    
+    Args:
+        env: Environment instance
+        command_name: Name of boolean command (0=crawl, 1=stand)
+        target_height_crawl: Target height when crawling (meters)
+        target_height_stand: Target height when standing (meters)
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        L2 squared height error penalty
+    """
+    # Get boolean command
+    command = env.command_manager.get_command(command_name)[:, 0]
+    standing_mask = (command > 0.5)
+    
+    # Get asset and body position
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # Z position
+    
+    # Select target height based on command
+    target_height = torch.where(
+        standing_mask,
+        torch.full_like(body_pos_w, target_height_stand),
+        torch.full_like(body_pos_w, target_height_crawl)
+    )
+    
+    # Compute L2 squared error
+    height_error = body_pos_w - target_height
+    return torch.sum(torch.square(height_error), dim=1)

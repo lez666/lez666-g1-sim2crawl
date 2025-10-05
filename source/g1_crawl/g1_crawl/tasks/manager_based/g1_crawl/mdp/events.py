@@ -495,6 +495,60 @@ def reset_to_pose_json(
 # ===== Animation-based reset helpers and event =====
 from ..g1 import get_animation
 
+# Cache for loaded animation data (keyed by json_path)
+_ANIMATION_CACHE: dict[str, dict] = {}
+
+
+def _load_animation_with_cache(json_path: str) -> dict:
+    """Load animation JSON with caching to avoid repeated file I/O.
+    
+    Animation JSON structure (dict with keys):
+    - "frames": qpos frames [[qpos0...], [qpos1...], ...]
+    - "metadata": dict with "joints", "qpos_labels", "base", etc.
+    - "site_positions": optional per-frame site positions
+    - "contact_flags": optional per-frame contact flags
+    
+    Returns cached dict with keys: "qpos_frames", "metadata", "num_frames"
+    """
+    if json_path in _ANIMATION_CACHE:
+        return _ANIMATION_CACHE[json_path]
+    
+    # Resolve project root relative to this file
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../.."))
+    full_path = os.path.join(project_root, json_path)
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"Animation JSON not found at: {full_path}")
+    
+    with open(full_path, "r") as f:
+        raw_data = json.load(f)
+    
+    # Parse structure: dict with "frames" and "metadata" keys
+    if not isinstance(raw_data, dict):
+        raise ValueError(f"Animation JSON must be a dict: {json_path}")
+    
+    if "frames" not in raw_data:
+        raise ValueError(f"Animation JSON missing 'frames' key: {json_path}")
+    
+    if "metadata" not in raw_data:
+        raise ValueError(f"Animation JSON missing 'metadata' key: {json_path}")
+    
+    qpos_frames = raw_data["frames"]
+    if not isinstance(qpos_frames, list) or len(qpos_frames) == 0:
+        raise ValueError(f"Animation 'frames' must be a non-empty list: {json_path}")
+    
+    metadata = raw_data["metadata"]
+    if "joints" not in metadata:
+        raise ValueError(f"Animation metadata missing 'joints' info: {json_path}")
+    
+    # Cache parsed data
+    cached = {
+        "qpos_frames": qpos_frames,
+        "metadata": metadata,
+        "num_frames": len(qpos_frames),
+    }
+    _ANIMATION_CACHE[json_path] = cached
+    return cached
+
 
 def _build_joint_index_map(asset: Articulation, joints_meta, qpos_labels):
     robot_joint_names = asset.data.joint_names
@@ -624,6 +678,156 @@ def _build_joint_velocity_index_map(asset: Articulation, joints_meta, qvel_label
     if missing:
         print(f"[WARN] Missing qvel indices for {len(missing)} joints (will keep default zeros)")
     return index_map
+
+
+def reset_from_animation_frame(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    json_path: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    pose_range: dict[str, tuple[float, float]] | None = None,
+    velocity_range: dict[str, tuple[float, float]] | None = None,
+    position_range: tuple[float, float] | None = None,
+    joint_velocity_range: tuple[float, float] | None = None,
+):
+    """Reset robot to a random frame from an animation JSON with optional noise/scaling.
+    
+    This function loads animation data (with caching for performance), samples a random
+    frame for each environment, and resets the robot to that frame's state.
+    
+    Animation structure:
+    - qpos frames contain: [base_x, base_y, base_z, quat_w, quat_x, quat_y, quat_z, joint0, joint1, ...]
+    - metadata provides joint mapping information
+    
+    Args:
+        env: The environment
+        env_ids: Environment IDs to reset
+        json_path: Path to animation JSON (e.g., "assets/animation_rc4.json")
+        asset_cfg: Asset configuration
+        pose_range: Optional uniform noise for base pose (same as reset_root_state_uniform)
+        velocity_range: Optional uniform noise for base velocity
+        position_range: Optional scaling range for joint positions (e.g., (0.9, 1.1))
+        joint_velocity_range: Optional scaling range for joint velocities
+    
+    Root state (base):
+    - Base pose/velocity are taken from the sampled animation frame
+    - Optional uniform noise via `pose_range` and `velocity_range`
+    
+    Joint state:
+    - Joint positions are taken from the sampled animation frame
+    - Optional scaling via `position_range`
+    - Joint velocities default to zero unless `joint_velocity_range` is provided
+    - Joint positions/velocities are clamped to limits
+    - Fails loudly if any joint is missing in the animation
+    
+    Note: Animation data is cached after first load to avoid repeated file I/O during training.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    device = asset.device
+    num_envs = len(env_ids)
+    
+    # Load animation with caching
+    anim_data = _load_animation_with_cache(json_path)
+    qpos_frames = anim_data["qpos_frames"]
+    metadata = anim_data["metadata"]
+    num_frames = anim_data["num_frames"]
+    
+    # Build joint index map (also cached via function-level logic)
+    joints_meta = metadata["joints"]
+    qpos_labels = metadata.get("qpos_labels", None)
+    joint_index_map = _build_joint_index_map(asset, joints_meta, qpos_labels)
+    
+    # Sample random frames for each env
+    frame_indices = torch.randint(0, num_frames, (num_envs,), device="cpu")
+    
+    # Extract base poses and joint positions for sampled frames
+    # qpos structure: [base_x, base_y, base_z, quat_w, quat_x, quat_y, quat_z, joint0, joint1, ...]
+    base_pos_list = []
+    base_quat_list = []
+    joint_pos_list = []
+    
+    for idx in frame_indices:
+        qpos = qpos_frames[int(idx.item())]
+        
+        # Extract base pose (first 7 elements: xyz + wxyz quaternion)
+        base_pos_list.append([float(qpos[0]), float(qpos[1]), float(qpos[2])])
+        base_quat_list.append([float(qpos[3]), float(qpos[4]), float(qpos[5]), float(qpos[6])])
+        
+        # Extract joint positions using index map
+        joint_positions = []
+        for joint_qpos_idx in joint_index_map:
+            # qpos[0:7] is base, so joints start at index 7
+            val = float(qpos[joint_qpos_idx])
+            joint_positions.append(val)
+        joint_pos_list.append(joint_positions)
+    
+    # Convert to tensors
+    base_pos_t = torch.tensor(base_pos_list, device=device, dtype=asset.data.root_pos_w.dtype)
+    base_quat_t = torch.tensor(base_quat_list, device=device, dtype=asset.data.root_quat_w.dtype)
+    
+    # ===== ROOT STATE RESET =====
+    positions = env.scene.env_origins[env_ids] + base_pos_t
+    orientations = base_quat_t
+    
+    # Add pose noise if specified
+    if pose_range is not None:
+        range_list = [pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=device)
+        rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        
+        positions = positions + rand_samples[:, 0:3]
+        orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
+        orientations = math_utils.quat_mul(orientations, orientations_delta)
+    
+    # Set velocities (zero or noise)
+    root_states = asset.data.default_root_state[env_ids].clone()
+    velocities = root_states[:, 7:13].clone()
+    velocities[:] = 0.0
+    
+    if velocity_range is not None:
+        range_list = [velocity_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=device)
+        rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
+        velocities = velocities + rand_samples
+    
+    # Write root state to sim
+    asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
+    asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
+    
+    # ===== JOINT STATE RESET =====
+    # cast env_ids for joint access
+    if asset_cfg.joint_ids != slice(None):
+        iter_env_ids = env_ids[:, None]
+    else:
+        iter_env_ids = env_ids
+    
+    # Convert joint positions list to tensor
+    joint_pos = torch.tensor(joint_pos_list, device=device, dtype=asset.data.joint_pos.dtype)
+    
+    # Handle joint_ids: if specific joints are requested, select only those
+    if asset_cfg.joint_ids != slice(None):
+        joint_pos = joint_pos[:, asset_cfg.joint_ids]
+    
+    joint_vel = torch.zeros_like(joint_pos, device=device)
+    
+    # Apply position scaling if specified
+    if position_range is not None:
+        joint_pos *= math_utils.sample_uniform(*position_range, joint_pos.shape, device)
+    
+    # Apply velocity scaling if specified
+    if joint_velocity_range is not None:
+        joint_vel *= math_utils.sample_uniform(*joint_velocity_range, joint_vel.shape, device)
+    
+    # Clamp joint pos to limits
+    joint_pos_limits = asset.data.soft_joint_pos_limits[iter_env_ids, asset_cfg.joint_ids]
+    joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
+    
+    # Clamp joint vel to limits
+    joint_vel_limits = asset.data.soft_joint_vel_limits[iter_env_ids, asset_cfg.joint_ids]
+    joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
+    
+    # Write joint state to sim
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)
 
 
 # ===== Animation playback speed helpers =====
@@ -761,223 +965,6 @@ def init_animation_phase_offsets(
  # if not hasattr(env, "_anim_phase_offset"):
     #     setattr(env, "_anim_phase_offset", torch.zeros(env.num_envs, device=asset.device, dtype=torch.float32))
     
-
-
-def reset_from_animation(
-    env: ManagerBasedEnv,
-    env_ids: torch.Tensor,
-    json_path: str | None = None,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    pose_noise_range: dict[str, tuple[float, float]] | None = None,
-    velocity_noise_range: dict[str, tuple[float, float]] | None = None,
-):
-    """Reset root pose, joint positions, and joint velocities from a random frame of an animation JSON.
-
-    Requires base pose indices and per-frame joint velocities to be present in the animation.
-    Raises an error if any required data or joint index mapping is missing.
-
-    Optional noise can be applied to the root pose and root velocity, similar to
-    ``reset_root_state_to_pose``. Each of ``pose_noise_range`` and ``velocity_noise_range``
-    should be dictionaries mapping keys in {"x", "y", "z", "roll", "pitch", "yaw"}
-    to (min, max) tuples. If omitted or None, no noise is applied for that component.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    device = asset.device
-
-    anim = get_animation(json_path)
-
-    # Build index maps once per call (cheap) — could be cached by joint_names hash if needed
-    joint_index_map = _build_joint_index_map(asset, anim.get("joints_meta"), anim.get("qpos_labels"))
-    joint_vel_index_map = _build_joint_velocity_index_map(
-        asset,
-        anim.get("joints_meta"),
-        anim.get("qvel_labels"),
-        anim.get("qpos_labels"),
-    )
-
-    num_envs = len(env_ids)
-    num_robot_dofs = asset.data.default_joint_pos.shape[1]
-
-    # Choose random frames per env
-    T = int(anim["num_frames"])
-    frame_indices = torch.randint(low=0, high=T, size=(num_envs,), device="cpu")
-
-    # Also store per-env phase offsets and global cycle time for downstream use (rewards)
-    phase_offsets = (frame_indices.to(device=asset.device, dtype=torch.float32) / float(T))
-    # if not hasattr(env, "_anim_phase_offset"):
-    #     setattr(env, "_anim_phase_offset", torch.zeros(env.num_envs, device=asset.device, dtype=torch.float32))
-    env._anim_phase_offset[env_ids] = phase_offsets  # type: ignore[attr-defined]
-    # Reset phase accumulator for these envs so the episode starts cleanly
-    if hasattr(env, "_anim_phase_accum"):
-        env._anim_phase_accum[env_ids] = 0.0  # type: ignore[attr-defined]
-    # env.animation_phase_offset[env_ids] = phase_offsets
-    # store cycle time in seconds
-    # setattr(env, "_anim_cycle_time_s", float(T) * float(anim["dt"]))
-
-    # Prepare root states
-    root_state = asset.data.default_root_state[env_ids].clone()
-    base_meta = anim.get("base_meta")
-    if base_meta is None:
-        raise ValueError("Animation JSON is missing base metadata 'base_meta'.")
-    pos_idx = base_meta.get("pos_indices", None)
-    quat_idx = base_meta.get("quat_indices", None)
-    if pos_idx is None or quat_idx is None:
-        raise ValueError("Animation base metadata must include 'pos_indices' and 'quat_indices'.")
-
-    # env origins
-    env_origins = env.scene.env_origins[env_ids].to(device=device)
-
-    # Apply base pose from animation (required)
-    qpos = anim["qpos"]  # GPU tensor [T, nq]
-    base_pos = torch.stack([qpos[int(fi), pos_idx] for fi in frame_indices], dim=0).to(device=device)
-    wxyz = torch.stack([qpos[int(fi), quat_idx] for fi in frame_indices], dim=0).to(device=device)
-    root_state[:, 0:3] = base_pos.to(device) + env_origins
-    root_state[:, 3:7] = wxyz.to(device)
-
-    # Zero root velocities (we currently do not map base velocities unless metadata provides explicit indices)
-    root_state[:, 7:13] = 0.0
-
-    # Optionally add noise to root pose (position + orientation)
-    if pose_noise_range is not None:
-        range_list = [pose_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
-        ranges = torch.tensor(range_list, device=device)
-        rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
-        # position noise
-        root_state[:, 0:3] = root_state[:, 0:3] + rand_samples[:, 0:3]
-        # orientation noise (compose delta on the right)
-        orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
-        root_state[:, 3:7] = math_utils.quat_mul(root_state[:, 3:7], orientations_delta)
-
-    # Optionally add noise to root velocity (linear + angular)
-    if velocity_noise_range is not None:
-        range_list = [velocity_noise_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
-        ranges = torch.tensor(range_list, device=device)
-        rand_vel = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (num_envs, 6), device=device)
-        root_state[:, 7:13] = root_state[:, 7:13] + rand_vel
-
-    # Prepare joint states
-    joint_pos = asset.data.default_joint_pos[env_ids].clone()
-    joint_vel = torch.zeros_like(joint_pos, device=joint_pos.device)
-
-    # Apply joint positions from animation
-    nq = int(anim["nq"])
-    # Required joint velocities from animation
-    qvel = anim.get("qvel", None)
-    if not isinstance(qvel, torch.Tensor):
-        raise ValueError("Animation JSON must include per-frame velocities 'qvel'/'vel_frames'.")
-    nv = int(anim.get("nv", 0) or qvel.shape[1])
-    if nv <= 0:
-        raise ValueError("Animation 'nv' must be > 0 when providing velocities.")
-
-    # Validate joint index maps: crash if any joint is unmapped
-    robot_joint_names = asset.data.joint_names
-    missing_pos = [jn for jn, idx in zip(robot_joint_names, joint_index_map) if not (isinstance(idx, int) and idx >= 0)]
-    if missing_pos:
-        raise ValueError(f"Missing qpos indices for joints: {missing_pos}")
-    missing_vel = [jn for jn, idx in zip(robot_joint_names, joint_vel_index_map) if not (isinstance(idx, int) and idx >= 0)]
-    if missing_vel:
-        raise ValueError(f"Missing qvel indices for joints: {missing_vel}")
-
-    for i in range(num_envs):
-        fi = int(frame_indices[i])
-        qrow = qpos[fi]  # CPU
-        for j_idx in range(num_robot_dofs):
-            qidx = joint_index_map[j_idx] if j_idx < len(joint_index_map) else -1
-            if isinstance(qidx, int) and 0 <= qidx < nq:
-                joint_pos[i, j_idx] = qrow[qidx].to(joint_pos.device)
-        # Apply joint velocities (required)
-        vrow = qvel[fi]
-        for j_idx in range(num_robot_dofs):
-            vidx = joint_vel_index_map[j_idx] if j_idx < len(joint_vel_index_map) else -1
-            if isinstance(vidx, int) and 0 <= vidx < nv:
-                joint_vel[i, j_idx] = vrow[vidx].to(joint_vel.device)
-
-    # Write to sim
-    asset.write_root_pose_to_sim(root_state[:, :7], env_ids=env_ids)
-    asset.write_root_velocity_to_sim(root_state[:, 7:], env_ids=env_ids)
-    asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-
-    # # Visualize site world positions for the selected frames (if provided in animation)
-    # sites = anim.get("site_positions", None)
-    # nsite = int(anim.get("nsite", 0) or 0)
-    # if is_visualization_available():
-    #     draw_interface = omni_debug_draw.acquire_debug_draw_interface()
-    #     # Clear old points if expired
-    #     current_time = time.time()
-    #     if _site_points_drawn and (current_time - _site_points_timestamp) > 1.0:
-    #         draw_interface.clear_points()
-    #         # Some versions only support clear_lines; fall back if needed
-    #         try:
-    #             pass
-    #         except Exception:
-    #             try:
-    #                 draw_interface.clear_lines()
-    #             except Exception:
-    #                 pass
-    #         globals()["_site_points_drawn"] = False
-
-    #     point_list = []
-    #     colors = []
-    #     sizes = []
-    #     # Fixed color and size for all site points
-    #     color = (0.1, 0.7, 1.0, 1.0)
-    #     size = 8
-    #     for i in range(num_envs):
-    #         fi = int(frame_indices[i])
-    #         pts = sites[fi].detach().cpu()  # [nsite, 3]
-    #         # Add env origin offset
-    #         origin = env_origins[i].cpu()
-    #         for j in range(int(pts.shape[0])):
-    #             x = float(pts[j, 0].item() + origin[0].item())
-    #             y = float(pts[j, 1].item() + origin[1].item())
-    #             z = float(pts[j, 2].item() + origin[2].item())
-    #             point_list.append((x, y, z))
-    #             colors.append(color)
-    #             sizes.append(size)
-
-    #     if point_list:
-    #         try:
-    #             draw_interface.draw_points(point_list, colors, sizes)
-    #             globals()["_site_points_timestamp"] = current_time
-    #             globals()["_site_points_drawn"] = True
-    #         except Exception as e:
-    #             # In cases where draw_points isn't available, skip silently
-    #             print(f"[DEBUG VIZ] draw_points unavailable: {e}")
-
-    # Also draw a single point at each env's base world position for 30 seconds to verify visibility
-    # if is_visualization_available():
-    #     draw_interface = omni_debug_draw.acquire_debug_draw_interface()
-    #     current_time = time.time()
-    #     # Clear old base points after 30 seconds
-    #     if _base_points_drawn and (current_time - _base_points_timestamp) > 30.0:
-    #         try:
-    #             draw_interface.clear_points()
-    #         except Exception:
-    #             try:
-    #                 draw_interface.clear_lines()
-    #             except Exception:
-    #                 pass
-    #         globals()["_base_points_drawn"] = False
-
-    #     # Build point list at root_state world positions (already includes env origins)
-    #     base_points = []
-    #     base_colors = []
-    #     base_sizes = []
-    #     base_color = (1.0, 0.1, 0.1, 1.0)
-    #     base_size = 20
-    #     rs_cpu = root_state[:, 0:3].detach().cpu()
-    #     for i in range(len(env_ids)):
-    #         p = rs_cpu[i]
-    #         base_points.append((float(p[0].item()), float(p[1].item()), float(p[2].item())))
-    #         base_colors.append(base_color)
-    #         base_sizes.append(base_size)
-    #     if base_points:
-    #         try:
-    #             draw_interface.draw_points(base_points, base_colors, base_sizes)
-    #             globals()["_base_points_timestamp"] = current_time
-    #             globals()["_base_points_drawn"] = True
-    #         except Exception as e:
-    #             print(f"[DEBUG VIZ] draw_points (base) unavailable: {e}")
 
 
 def viz_animation_sites_step(
