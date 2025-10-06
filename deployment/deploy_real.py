@@ -30,6 +30,7 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
+from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
 import time
 import sys
 import struct
@@ -163,6 +164,11 @@ class Controller:
         # Remote controller state
         self.remote = unitreeRemoteController()
 
+        # Audio client for TTS feedback
+        self.audio_client = AudioClient()
+        self.audio_client.SetTimeout(10.0)
+        self.audio_client.Init()
+
         # wait for the subscriber to receive data
         self.wait_for_low_state()
 
@@ -172,8 +178,11 @@ class Controller:
         # Unified control state
         self.control_mode = "damped"  # one of {"damped", "policy", "hold"}
         self.hold_target_pose = None  # type: np.ndarray | None
-        self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0}
+        self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0, "F1": 0, "Start": 0}
         self._max_forward_speed = 1.5  # Ly -> [0, 1.5]
+        
+        # Safety gate: require Start button press before allowing controls
+        self._system_started = False
 
     def _rising(self, name: str, current: int) -> bool:
         was = self._prev_buttons.get(name, 0)
@@ -198,10 +207,28 @@ class Controller:
         self.control_mode = "hold"
 
     def process_global_buttons(self):
-        # Select: immediate quit
+        # Select: immediate quit (ALWAYS ACTIVE)
         if self._rising("Select", self.remote.Select):
             print("Select pressed: Quitting...")
             sys.exit(0)
+        
+        # Start: Enable system (ALWAYS ACTIVE)
+        if self._rising("Start", self.remote.Start):
+            if not self._system_started:
+                print("=" * 60)
+                print("START PRESSED: System is now ACTIVE!")
+                print("All controls are now enabled.")
+                print("=" * 60)
+                self.audio_client.LedControl(0, 255, 0)  # Green LED to indicate system is active
+                self._system_started = True
+            else:
+                print("Start pressed again (system already active).")
+            return
+        
+        # All other buttons require system to be started
+        if not self._system_started:
+            return
+        
         # Y: Damped mode
         if self._rising("Y", self.remote.Y):
             print("Y pressed: Entering damped mode.")
@@ -220,6 +247,10 @@ class Controller:
         if self._rising("B", self.remote.B):
             print("B pressed: Moving to default position and holding.")
             self.set_hold_pose(self.default_pos_array, total_time=2.0)
+        # F1: LED control
+        if self._rising("F1", self.remote.F1):
+            print("F1 pressed: Switching LED.")
+            self.audio_client.LedControl(255,0,0)
 
     def send_cmd(self, cmd: LowCmd_):
         cmd.crc = CRC().Crc(cmd)
@@ -502,18 +533,26 @@ if __name__ == "__main__":
     print("Setting up policy...")
     policy = TorchPolicy(POLICY_PATH)
     print("WARNING: Please ensure there are no obstacles around the robot while running this example.")
-    print("Controls (always active):")
+    print("\n" + "=" * 60)
+    print("SAFETY: Press START button to enable all controls!")
+    print("=" * 60)
+    print("\nControls (active ONLY after pressing Start):")
     print("  A: Move to crawl pose and HOLD")
     print("  B: Move to DEFAULT pose and HOLD")
     print("  X: Neural network CONTROL (policy)")
     print("  Y: DAMPED mode")
+    print("  F1: RED LED")
+    print("\nAlways active:")
+    print("  Start: ENABLE system (press this first!)")
     print("  Select: QUIT immediately")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
     controller = Controller(policy)
 
-    print("Controller ready. Use the buttons anytime as listed above.")
+    print("\n" + "=" * 60)
+    print("Controller ready. Press START to begin!")
+    print("=" * 60)
     while True:
         controller.process_global_buttons()
 
