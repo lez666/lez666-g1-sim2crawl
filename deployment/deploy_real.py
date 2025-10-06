@@ -146,6 +146,16 @@ class Controller:
         # Static velocity command placeholder; keyboard controls removed
 
         self.control_dt = 0.02
+        
+        # Remote heartbeat tracking
+        self._last_remote_update_time = time.time()
+        self._remote_timeout_seconds = 0.5  # Switch to damped if no update for 0.5s
+        self._remote_connected = True
+        self._last_remote_tick = None
+        
+        # Debug logging
+        self._last_debug_print_time = time.time()
+        self._debug_print_interval = 1.0  # Print debug info every second
 
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()
         self.low_state = unitree_hg_msg_dds__LowState_()
@@ -205,6 +215,43 @@ class Controller:
         self.move_to_pose(target_pose, total_time=total_time)
         self.hold_target_pose = target_pose.copy()
         self.control_mode = "hold"
+
+    # def print_debug_state(self):
+    #     """Print debug information about low_state periodically."""
+    #     current_time = time.time()
+    #     if current_time - self._last_debug_print_time >= self._debug_print_interval:
+    #         self._last_debug_print_time = current_time
+            
+    #         # Print information about wireless_remote field
+    #         wr = self.low_state.wireless_remote
+    #         wr_len = len(wr) if wr is not None else 0
+    #         wr_bytes = wr[:8] if wr is not None and len(wr) >= 8 else []
+            
+    #         print(f"[DEBUG] tick={self.low_state.tick} | "
+    #               f"wireless_remote: len={wr_len}, first_8_bytes={list(wr_bytes)} | "
+    #               f"Lx={self.remote.Lx:.3f} Ly={self.remote.Ly:.3f} | "
+    #               f"A={self.remote.A} B={self.remote.B} X={self.remote.X} Y={self.remote.Y} | "
+    #               f"remote_connected={self._remote_connected}")
+
+    def check_remote_heartbeat(self):
+        """Check if remote is still connected; switch to damped mode if disconnected."""
+        current_time = time.time()
+        time_since_update = current_time - self._last_remote_update_time
+        
+        if time_since_update > self._remote_timeout_seconds:
+            if self._remote_connected:
+                print("=" * 60)
+                print("WARNING: REMOTE CONTROL DISCONNECTED!")
+                print(f"No heartbeat for {time_since_update:.2f}s (timeout: {self._remote_timeout_seconds}s)")
+                print("Automatically switching to DAMPED mode for safety.")
+                print("=" * 60)
+                self._remote_connected = False
+                # Force damped mode
+                if self.control_mode != "damped":
+                    self.control_mode = "damped"
+                    self.hold_target_pose = None
+            return False
+        return True
 
     def process_global_buttons(self):
         # Select: immediate quit (ALWAYS ACTIVE)
@@ -291,9 +338,20 @@ class Controller:
     def LowStateHandler(self, msg: LowState_):
         self.low_state = msg
         self.mode_machine_ = self.low_state.mode_machine
-        # Update remote controller state
+        # Update remote controller state and heartbeat
         try:
-            self.remote.parse(self.low_state.wireless_remote)
+            wr = self.low_state.wireless_remote
+            if wr is not None and len(wr) >= 2:
+                # Check for remote activity in first two bytes
+                # When remote is ON: bytes 0-1 are non-zero (e.g., [85, 81])
+                # When remote is OFF: bytes 0-1 are [0, 0]
+                if not (wr[0] == 0 and wr[1] == 0):
+                    # Remote is active - update heartbeat
+                    self._last_remote_update_time = time.time()
+                    if not self._remote_connected:
+                        print("REMOTE RECONNECTED: Remote control is back online.")
+                        self._remote_connected = True
+                self.remote.parse(wr)
         except Exception:
             pass
 
@@ -545,6 +603,8 @@ if __name__ == "__main__":
     print("\nAlways active:")
     print("  Start: ENABLE system (press this first!)")
     print("  Select: QUIT immediately")
+    print("\nSafety features:")
+    print("  - Remote heartbeat: Auto-damped if remote disconnects (timeout: 0.5s)")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
@@ -553,7 +613,15 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Controller ready. Press START to begin!")
     print("=" * 60)
+    print("\n[DEBUG MODE ENABLED] Printing low_state info every second...")
+    print("Watch for changes when you turn off the remote controller.\n")
     while True:
+        # Print debug state periodically
+        # controller.print_debug_state()
+        
+        # Check remote heartbeat first (safety check)
+        controller.check_remote_heartbeat()
+        
         controller.process_global_buttons()
 
         if controller.control_mode == "policy":
