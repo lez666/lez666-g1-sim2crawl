@@ -11,7 +11,7 @@ from .symmetry_func import data_augmentation_func_g1
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 2000
+    max_iterations = 1500
     save_interval = 250
     experiment_name = "g1_crawl_trans_simple"
     empirical_normalization = False
@@ -35,10 +35,10 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
-        symmetry_cfg = RslRlSymmetryCfg(
-            use_data_augmentation=False,
-            use_mirror_loss=True,
-            mirror_loss_coeff=0.5,
-            data_augmentation_func=data_augmentation_func_g1,
-        )
+        # symmetry_cfg = RslRlSymmetryCfg(
+        #     use_data_augmentation=False,
+        #     use_mirror_loss=True,
+        #     mirror_loss_coeff=0.5,
+        #     data_augmentation_func=data_augmentation_func_g1,
+        # )
     )

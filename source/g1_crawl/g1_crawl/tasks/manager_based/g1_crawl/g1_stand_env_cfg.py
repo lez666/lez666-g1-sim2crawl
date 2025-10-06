@@ -34,7 +34,7 @@ from .g1 import G1_CFG
 
 
 @configclass
-class G1CrawlTransitionSceneCfg(InteractiveSceneCfg):
+class G1StandSceneCfg(InteractiveSceneCfg):
   # ground terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -328,7 +328,7 @@ class RewardsCfg:
 
     joint_deviation_all = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
@@ -382,9 +382,9 @@ class TerminationsCfg:
     )
 
 @configclass
-class G1CrawlTransitionEnvCfg(ManagerBasedRLEnvCfg):
+class G1StandEnvCfg(ManagerBasedRLEnvCfg):
     # Scene settings
-    scene: G1CrawlTransitionSceneCfg = G1CrawlTransitionSceneCfg(num_envs=4096, env_spacing=4.0)
+    scene: G1StandSceneCfg = G1StandSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: CommandsCfg = CommandsCfg()
