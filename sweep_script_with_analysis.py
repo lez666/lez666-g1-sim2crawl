@@ -21,8 +21,8 @@ SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
         "agent.algorithm.symmetry_cfg.use_mirror_loss": [True, False],
-        "env.rewards.base_height_l2.weight": [-0.5,-0.2, -0.1],
-        "env.rewards.commanded_orientation_l2_penalty.weight": [-0.5,-0.2, -0.1],
+        # "env.rewards.base_height_l2.weight": [-0.5,-0.2, -0.1],
+        # "env.rewards.commanded_orientation_l2_penalty.weight": [-0.5,-0.2, -0.1],
 
         # "env.events.push_robot.interval_range_s": [[1000.0,1000.0], [3.0, 5.0]],
     },
@@ -45,6 +45,18 @@ SWEEP_CONFIG = {
     # - Parameters that appear in any grouped set MUST NOT also appear in SWEEP_PARAMS.
     # - All choices within a single group must set the same parameter keys.
     "SWEEP_PARAM_SETS": [
+               [
+            {
+                "env.rewards.pose_deviation_hip.weight": -0.5,
+                "env.rewards.pose_deviation_torso.weight": -0.1,
+                "env.rewards.base_height_l2.weight": -0.2,
+            },
+            {
+                "env.rewards.pose_deviation_hip.weight": -0.2,
+                "env.rewards.pose_deviation_torso.weight": -0.2,
+                "env.rewards.base_height_l2.weight": -0.1,
+            }
+        ],
         # [
         #     {
         #         "env.rewards.pose_deviation_hip.weight": -0.5,
