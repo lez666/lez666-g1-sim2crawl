@@ -12,22 +12,13 @@ from . import agents
 ##
 
 
-gym.register(
-    id="g1-crawl-mimic",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_crawl_env_cfg:G1CrawlEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
-    },
-)
 
 gym.register(
-    id="g1-crawl-proc",
+    id="g1-crawl",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_crawl_proc_env_cfg:G1CrawlProcEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.g1_crawl_env_cfg:G1CrawlProcEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
     },
 )

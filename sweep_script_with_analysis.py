@@ -6,27 +6,36 @@ from datetime import datetime
 import nanoid as nano
 
 
-
+# Special sentinel value: use this in sweep params to indicate the parameter should be omitted from CLI
+# Example: "env.curriculum.push_event_freq": ["__OMIT__", "null"]
+# This will sweep between not including the parameter at all vs including it as =null
+OMIT_PARAM = "__OMIT__"
 
 # Experiment configuration
-TASK_NAME = "g1-stand"
-EXPERIMENT_NAME = "g1_stand_sweep_v1"  
+TASK_NAME = "g1-crawl"
+EXPERIMENT_NAME = "g1_crawl_finalizing_v3"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
 # PARAMETER SWEEP CONFIGURATION - CENTRALIZED
 # =============================================================================
 # Define which parameters to sweep (as lists) and which to keep fixed (as single values)
+# 
+# Special value "__OMIT__": Use this to sweep between omitting a parameter vs including it
+# Example: "env.curriculum.push_event_freq": ["__OMIT__", "null"]
+#   - "__OMIT__" = parameter won't be in CLI call (uses default from config)
+#   - "null" = parameter will be set to null explicitly
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.flat_orientation_l2.weight": [-5., -1.0, -0.1],
-        "env.rewards.base_height_l2.weight": [-5. ,-1.0, -0.1],
-        "env.rewards.joint_deviation_all.weight":  [-5., -1.0, -0.1]
+        "env.commands.base_velocity.resampling_time_range": ["__OMIT__", "[3.,15.]"],
+        "env.curriculum.push_event_freq": ["__OMIT__", "null"],
 
         # "env.rewards.commanded_orientation_l2_penalty.weight": [-0.5,-0.2, -0.1],
 
         # "env.events.push_robot.interval_range_s": [[1000.0,1000.0], [3.0, 5.0]],
+        
+        # Example: sweep between omitting (use default) and setting to null
     },
 
     # Grouped parameter sets: each entry is a list of dicts. Within a list,
@@ -273,12 +282,17 @@ def generate_parameter_combinations():
     return all_combos
 
 def build_train_args(sweep_params):
-    """Build training arguments from sweep and fixed parameters."""
+    """Build training arguments from sweep and fixed parameters.
+    
+    Parameters with value OMIT_PARAM ("__OMIT__") will be skipped entirely,
+    allowing you to sweep between including/omitting a parameter.
+    """
     train_args = []
     
-    # Add sweep parameters
+    # Add sweep parameters (skip those marked with OMIT_PARAM)
     for param_name, param_value in sweep_params.items():
-        train_args.append(f"{param_name}={param_value}")
+        if param_value != OMIT_PARAM:
+            train_args.append(f"{param_name}={param_value}")
     
    
     
@@ -289,8 +303,13 @@ def get_combination_description(sweep_params, combination_num, total_combination
     if not sweep_params:
         return f"Set {combination_num}/{total_combinations}: (fixed parameters only)"
     
-    param_strs = [f"{param_name.split('.')[-1]}={param_value}" 
-                  for param_name, param_value in sweep_params.items()]
+    param_strs = []
+    for param_name, param_value in sweep_params.items():
+        short_name = param_name.split('.')[-1]
+        if param_value == OMIT_PARAM:
+            param_strs.append(f"{short_name}=<omitted>")
+        else:
+            param_strs.append(f"{short_name}={param_value}")
     param_description = ", ".join(param_strs)
     
     return f"Set {combination_num}/{total_combinations}: {param_description}"

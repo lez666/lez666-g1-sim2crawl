@@ -217,14 +217,18 @@ class EventCfg:
             "operation": "scale",
         },
     )
+
+
     # reset
     # Replace uniform base reset with animation-based reset
     reset_base = EventTerm(
-        func=mdp.reset_from_animation,
+        func=mdp.reset_from_animation_frame,
         mode="reset",
         params={
+            "json_path": "assets/animation_rc4.json",
+
             # Small random offsets on root pose at reset (position in meters, angles in radians)
-            "pose_noise_range": {
+            "pose_range": {
                 "x": (-0.05, 0.05),
                 "y": (-0.05, 0.05),
                 "z": (-0.05, 0.05),
@@ -233,7 +237,7 @@ class EventCfg:
                 "yaw": (-0.10, 0.10),
             },
             # Small random root velocity at reset (linear m/s, angular rad/s)
-            "velocity_noise_range": {
+            "velocity_range": {
                 "x": (-0.20, 0.20),
                 "y": (-0.20, 0.20),
                 "z": (-0.2, 0.2),
@@ -241,6 +245,9 @@ class EventCfg:
                 "pitch": (-0.30, 0.30),
                 "yaw": (-0.30, 0.30),
             },
+            "position_range": (0.9, 1.1),
+            "joint_velocity_range": (0.0, 0.0),
+
         },
     )
     # reset_base = EventTerm(
