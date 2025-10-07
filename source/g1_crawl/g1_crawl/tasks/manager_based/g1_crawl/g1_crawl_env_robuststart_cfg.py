@@ -34,7 +34,7 @@ from .g1 import G1_CFG
 
 
 @configclass
-class G1CrawlProcSceneCfg(InteractiveSceneCfg):
+class G1CrawlRobustStartSceneCfg(InteractiveSceneCfg):
   # ground terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -83,7 +83,7 @@ class CommandsCfg:
 
     base_velocity = mdp.CrawlVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 10.0),
+        resampling_time_range=(10.0,10.0),
         rel_standing_envs=0.02,
         debug_vis=True,
         ranges=mdp.CrawlVelocityCommandCfg.Ranges(
@@ -260,40 +260,35 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity_with_viz,
         mode="interval",
-        interval_range_s=(5,10),
+        interval_range_s=(1000,1000),
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
-@configclass
-class CurriculumCfg:
-    """Curriculum terms for the MDP."""
-
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
-# def override_value(env, env_ids, data, value, num_steps):
-#         if env.common_step_counter > num_steps:
-#             return value
-#         return mdp.modify_term_cfg.NO_CHANGE 
-
 # @configclass
 # class CurriculumCfg:
+#     """Curriculum terms for the MDP."""
+
+#     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
+def override_value(env, env_ids, data, value, num_steps):
+    # if env.common_step_counter % 1000 == 0:  # print every 1000 steps
+    # print(f"[curriculum probe] common_step_counter={env.common_step_counter}, "
+    #     f"num_steps={num_steps}")
+    if env.common_step_counter > num_steps:
+        # print(f"[curriculum trigger] triggered at step {env.common_step_counter}")
+        return value
+    return mdp.modify_term_cfg.NO_CHANGE
 
 
-#     command_object_pose_xrange_adr = CurrTerm(
-#                 func=mdp.modify_term_cfg,
-#                 params={
-#                     "address": "commands.base_velocity.ranges.lin_vel_z",   # note: `_manager.cfg` is omitted
-#                     "modify_fn": override_value,
-#                     "modify_params": {"value": (0.0,2.0), "num_steps": 25000}
-#                 }
-#             )
 
-#     push_event_freq = CurrTerm(
-#                 func=mdp.modify_term_cfg,
-#                 params={
-#                     "address": "events.push_robot.interval_range_s",   # note: `_manager.cfg` is omitted
-#                     "modify_fn": override_value,
-#                     "modify_params": {"value": (2,5), "num_steps": 25000}
-#                 }
-#             )
+@configclass
+class CurriculumCfg:
+    push_event_freq = CurrTerm(
+            func=mdp.modify_term_cfg,
+            params={
+                "address": "events.push_robot.interval_range_s",   # note: `_manager.cfg` is omitted
+                "modify_fn": override_value,
+                "modify_params": {"value": (3,10), "num_steps": 36000} #24*ITERATION 
+            }
+        )
 
 @configclass
 class RewardsCfg:
@@ -418,9 +413,9 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
 @configclass
-class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
+class G1CrawlRobustStartEnvCfg(ManagerBasedRLEnvCfg):
     # Scene settings
-    scene: G1CrawlProcSceneCfg = G1CrawlProcSceneCfg(num_envs=4096, env_spacing=4.0)
+    scene: G1CrawlRobustStartSceneCfg = G1CrawlRobustStartSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: CommandsCfg = CommandsCfg()
@@ -429,7 +424,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    # curriculum: CurriculumCfg = CurriculumCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
 
 
     def __post_init__(self) -> None:

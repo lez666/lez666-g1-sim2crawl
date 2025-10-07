@@ -376,7 +376,7 @@ class RewardsCfg:
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.2,
+            "threshold": 0.1,
         },
     )
 

@@ -63,6 +63,8 @@ def mirror_joint_tensor(original: torch.Tensor, mirrored: torch.Tensor, offset: 
     mirrored[..., invert_indices] = -mirrored[..., invert_indices]
     
 
+
+
 def mirror_observation_policy(obs):
     if obs is None:
         return obs
@@ -75,13 +77,10 @@ def mirror_observation_policy(obs):
     # Mirror velocity commands (flip y and z)
     flipped_obs[..., 4] = -_obs[..., 4]  # y component of velocity_commands
     flipped_obs[..., 5] = -_obs[..., 5]  # z component of velocity_commands
-    
-    # boolean_commands at index 6 - NOT mirrored (mode command, not directional)
-    
-    # Mirror joint tensors (offset by 1 due to boolean_commands)
-    mirror_joint_tensor(_obs, flipped_obs, 7)   # joint_pos (was 6)
-    mirror_joint_tensor(_obs, flipped_obs, 30)  # joint_vel (was 29)
-    mirror_joint_tensor(_obs, flipped_obs, 53)  # actions (was 52)
+
+    mirror_joint_tensor(_obs,flipped_obs,6) 
+    mirror_joint_tensor(_obs,flipped_obs,29) 
+    mirror_joint_tensor(_obs,flipped_obs,52) 
 
     return torch.vstack((_obs, flipped_obs))
 
@@ -94,23 +93,19 @@ def mirror_observation_critic(obs):
     # Mirror base linear velocity (flip y)
     flipped_obs[..., 1] = -_obs[..., 1]  # y component of base_lin_vel
     
-    # Mirror base angular velocity (flip x and z)
-    flipped_obs[..., 3] = -_obs[..., 3]  # x component of base_ang_vel
+    # Mirror base angular velocity (flip z)
     flipped_obs[..., 5] = -_obs[..., 5]  # z component of base_ang_vel
     
     # Mirror projected gravity (flip y)
     flipped_obs[..., 7] = -_obs[..., 7]  # y component of projected_gravity
     
-    # boolean_commands at index 9 - NOT mirrored (mode command, not directional)
-    
     # Mirror velocity commands (flip y and z)
-    flipped_obs[..., 11] = -_obs[..., 11]  # y component of velocity_commands (was 10)
-    flipped_obs[..., 12] = -_obs[..., 12]  # z component of velocity_commands (was 11)
+    flipped_obs[..., 10] = -_obs[..., 10]  # y component of velocity_commands
+    flipped_obs[..., 11] = -_obs[..., 11]  # z component of velocity_commands
 
-    # Mirror joint tensors (offset by 1 due to boolean_commands)
-    mirror_joint_tensor(_obs, flipped_obs, 13)  # joint_pos (was 12)
-    mirror_joint_tensor(_obs, flipped_obs, 36)  # joint_vel (was 35)
-    mirror_joint_tensor(_obs, flipped_obs, 59)  # actions (was 58)
+    mirror_joint_tensor(_obs,flipped_obs,12) 
+    mirror_joint_tensor(_obs,flipped_obs,35) 
+    mirror_joint_tensor(_obs,flipped_obs,58) 
 
     return torch.vstack((_obs, flipped_obs))
 
@@ -136,4 +131,3 @@ def data_augmentation_func_g1(env, obs, actions, obs_type):
     
     mean_actions_batch = mirror_actions(actions)
     return obs_batch, mean_actions_batch
-
