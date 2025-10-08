@@ -90,7 +90,7 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0., 0.5), lin_vel_y=(0.0, 0.0), ang_vel_z=(-0.5,0.5), heading=(-3.14, 3.14)
+            lin_vel_x=(0., 1.), lin_vel_y=(0.0, 0.0), ang_vel_z=(-0.5,0.5), heading=(-3.14, 3.14)
         ),
     )
 
@@ -376,7 +376,7 @@ class RewardsCfg:
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.1,
+            "threshold": 0.2,
         },
     )
 

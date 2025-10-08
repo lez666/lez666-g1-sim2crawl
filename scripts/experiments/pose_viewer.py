@@ -12,6 +12,7 @@ from g1_crawl.tasks.manager_based.g1_crawl.g1 import G1_CFG
 
 import json
 from typing import Dict, List
+import time
 
 import torch
 
@@ -72,25 +73,30 @@ def rpy_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> torch.Tensor:
     return quat
 
 
-def load_pose_json(path: str) -> Dict:
+def load_pose_json(path: str) -> List[Dict]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     _assert_keys(data, ["poses"], context="pose json root")
     poses = data["poses"]
     if not isinstance(poses, list) or len(poses) == 0:
         raise ValueError("'poses' must be a non-empty list")
-    pose0 = poses[0]
-    _assert_keys(pose0, ["base_pos", "base_rpy", "joints"], context="pose entry")
-    base_pos = pose0["base_pos"]
-    base_rpy = pose0["base_rpy"]
-    joints = pose0["joints"]
-    if not (isinstance(base_pos, list) and len(base_pos) == 3):
-        raise ValueError("'base_pos' must be a list of 3 floats: [x, y, z]")
-    if not (isinstance(base_rpy, list) and len(base_rpy) == 3):
-        raise ValueError("'base_rpy' must be a list of 3 floats: [roll, pitch, yaw]")
-    if not isinstance(joints, dict) or len(joints) == 0:
-        raise ValueError("'joints' must be a non-empty mapping of name->value")
-    return {"base_pos": base_pos, "base_rpy": base_rpy, "joints": joints}
+    
+    # Validate all poses
+    validated_poses = []
+    for i, pose in enumerate(poses):
+        _assert_keys(pose, ["base_pos", "base_rpy", "joints"], context=f"pose entry {i}")
+        base_pos = pose["base_pos"]
+        base_rpy = pose["base_rpy"]
+        joints = pose["joints"]
+        if not (isinstance(base_pos, list) and len(base_pos) == 3):
+            raise ValueError(f"Pose {i}: 'base_pos' must be a list of 3 floats: [x, y, z]")
+        if not (isinstance(base_rpy, list) and len(base_rpy) == 3):
+            raise ValueError(f"Pose {i}: 'base_rpy' must be a list of 3 floats: [roll, pitch, yaw]")
+        if not isinstance(joints, dict) or len(joints) == 0:
+            raise ValueError(f"Pose {i}: 'joints' must be a non-empty mapping of name->value")
+        validated_poses.append({"base_pos": base_pos, "base_rpy": base_rpy, "joints": joints})
+    
+    return validated_poses
 
 
 def build_joint_name_to_index_map(asset) -> Dict[str, int]:
@@ -104,14 +110,15 @@ def build_joint_name_to_index_map(asset) -> Dict[str, int]:
 def apply_pose(scene: InteractiveScene, pose: Dict, name_to_index: Dict[str, int]) -> None:
     device = scene["Robot"].device
 
-    # Root pose: keep default position, set orientation from base_rpy
+    # Root pose: zero out x/y, only use z from pose
     base_x, base_y, base_z = pose["base_pos"]
     base_r, base_p, base_y = pose["base_rpy"]
     wxyz = rpy_to_quat_wxyz(float(base_r), float(base_p), float(base_y)).to(device=device)
 
     origin = scene.env_origins.to(device=device)[0] if hasattr(scene, "env_origins") else torch.zeros(3, device=device)
     new_root_state = torch.zeros(1, 13, device=device)
-    base_pos_tensor = torch.tensor([float(base_x), float(base_y), float(base_z)], device=device, dtype=torch.float32)
+    # Force x=0, y=0, only use z from the pose
+    base_pos_tensor = torch.tensor([0.0, 0.0, float(base_z)], device=device, dtype=torch.float32)
     new_root_state[0, :3] = base_pos_tensor + origin
     new_root_state[0, 3:7] = wxyz
     new_root_state[0, 7:13] = 0.0
@@ -133,8 +140,17 @@ def apply_pose(scene: InteractiveScene, pose: Dict, name_to_index: Dict[str, int
 
 
 def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, pose_path: str) -> None:
-    pose = load_pose_json(pose_path)
+    poses = load_pose_json(pose_path)
     name_to_index = build_joint_name_to_index_map(scene["Robot"]) 
+    
+    # Track current pose index and auto-play state
+    current_pose_idx = 0
+    auto_play = True  # Start in auto-play mode
+    playback_direction = 1  # 1 for forward, -1 for backward
+    
+    # Frame number display tracking
+    last_print_time = time.time()
+    print_interval = 1.0  # seconds
 
     # Per-joint offsets for interactive tweaking (radians)
     adjustable_joints = [
@@ -150,6 +166,7 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
 
     def apply_pose_with_offsets() -> None:
         # Build a temporary pose dict with offsets applied to selected joints
+        pose = poses[current_pose_idx]
         p = {
             "base_pos": pose["base_pos"],
             "base_rpy": pose["base_rpy"],
@@ -163,6 +180,7 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
 
     def export_offsets() -> None:
         # Build changed-only mapping and full joints mapping with offsets
+        pose = poses[current_pose_idx]
         changed = {}
         full = dict(pose["joints"])  # copy
         for jn, off in joint_offsets.items():
@@ -171,7 +189,7 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
                 changed[jn] = new_val
                 full[jn] = new_val
         import json as _json
-        print("\n=== Changed joints (JSON snippet) ===")
+        print(f"\n=== Pose {current_pose_idx} - Changed joints (JSON snippet) ===")
         print(_json.dumps(changed, indent=2, sort_keys=True))
         print("=== Full joints block (JSON) ===")
         print(_json.dumps(full, indent=2, sort_keys=True))
@@ -181,16 +199,75 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
     input_interface = carb.input.acquire_input_interface()
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
 
-    keys_pressed = {"R": False, "ESCAPE": False}
+    keys_pressed = {"R": False, "ESCAPE": False, "LEFT": False, "RIGHT": False, "SPACE": False, "B": False}
 
     def on_keyboard_event(event):
-        nonlocal keys_pressed
+        nonlocal keys_pressed, current_pose_idx, auto_play, playback_direction
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
             key = event.input.name
-            if key == "R" and not keys_pressed["R"]:
+            if key == "SPACE" and not keys_pressed["SPACE"]:
+                keys_pressed["SPACE"] = True
+                auto_play = not auto_play
+                direction_str = "FORWARD" if playback_direction == 1 else "BACKWARD"
+                print(f"Auto-play: {'ON' if auto_play else 'OFF'} ({direction_str})")
+            elif key == "B" and not keys_pressed["B"]:
+                keys_pressed["B"] = True
+                playback_direction *= -1
+                direction_str = "FORWARD" if playback_direction == 1 else "BACKWARD"
+                print(f"Playback direction: {direction_str}")
+            elif key == "R" and not keys_pressed["R"]:
                 keys_pressed["R"] = True
+                pose = poses[current_pose_idx]
                 apply_pose(scene, pose, name_to_index)
-                print("Pose reapplied from JSON (no offsets)")
+                print(f"Pose {current_pose_idx}/{len(poses)-1} reapplied from JSON (no offsets)")
+            elif key == "LEFT" and not keys_pressed["LEFT"]:
+                keys_pressed["LEFT"] = True
+                auto_play = False  # Pause auto-play when manually navigating
+                current_pose_idx = (current_pose_idx - 1) % len(poses)
+                # Clear offsets when changing poses
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+                apply_pose_with_offsets()
+                print(f"Previous pose: {current_pose_idx}/{len(poses)-1} [Auto-play paused]")
+            elif key == "RIGHT" and not keys_pressed["RIGHT"]:
+                keys_pressed["RIGHT"] = True
+                auto_play = False  # Pause auto-play when manually navigating
+                current_pose_idx = (current_pose_idx + 1) % len(poses)
+                # Clear offsets when changing poses
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+                apply_pose_with_offsets()
+                print(f"Next pose: {current_pose_idx}/{len(poses)-1} [Auto-play paused]")
+            elif key == "LEFT_BRACKET":
+                # Skip backward by 10%
+                skip_amount = max(1, len(poses) // 10)
+                current_pose_idx = (current_pose_idx - skip_amount) % len(poses)
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+                apply_pose_with_offsets()
+                print(f"Skipped backward 10% to pose: {current_pose_idx}/{len(poses)-1}")
+            elif key == "RIGHT_BRACKET":
+                # Skip forward by 10%
+                skip_amount = max(1, len(poses) // 10)
+                current_pose_idx = (current_pose_idx + skip_amount) % len(poses)
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+                apply_pose_with_offsets()
+                print(f"Skipped forward 10% to pose: {current_pose_idx}/{len(poses)-1}")
+            elif key == "HOME":
+                # Jump to start
+                current_pose_idx = 0
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+                apply_pose_with_offsets()
+                print(f"Jumped to start: {current_pose_idx}/{len(poses)-1}")
+            elif key == "END":
+                # Jump to end
+                current_pose_idx = len(poses) - 1
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+                apply_pose_with_offsets()
+                print(f"Jumped to end: {current_pose_idx}/{len(poses)-1}")
             elif key == "P":
                 export_offsets()
             elif key == "C":
@@ -261,11 +338,18 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
     keyboard_subscription = input_interface.subscribe_to_keyboard_events(keyboard, on_keyboard_event)
 
     # Initial apply
-    apply_pose(scene, pose, name_to_index)
+    apply_pose_with_offsets()
 
     print("Starting pose viewer...")
-    print("Controls:")
-    print("  R - Reapply base pose from JSON (ignores offsets)")
+    print(f"Loaded {len(poses)} poses from {pose_path}")
+    print(f"Playback rate: Full simulation rate (one pose per simulation step)")
+    print("\nControls:")
+    print("  SPACE - Toggle auto-play on/off")
+    print("  B - Toggle playback direction (forward/backward)")
+    print("  [ / ] - Skip backward/forward by 10%")
+    print("  HOME / END - Jump to start/end")
+    print("  LEFT/RIGHT ARROW - Navigate between poses (pauses auto-play)")
+    print("  R - Reapply current pose from JSON (ignores offsets)")
     print("  C - Clear all shoulder/elbow offsets")
     print("  Q/A - Left shoulder pitch +/-")
     print("  W/S - Left shoulder roll +/-")
@@ -275,6 +359,9 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
     print("  I/K - Right elbow +/-")
     print("  P - Print changed and full joints JSON to console")
     print("  ESC - Exit")
+    print(f"\nCurrent pose: {current_pose_idx}/{len(poses)-1}")
+    direction_str = "FORWARD" if playback_direction == 1 else "BACKWARD"
+    print(f"Auto-play: {'ON' if auto_play else 'OFF'} ({direction_str})")
 
     try:
         sim_dt = sim.get_physics_dt()
@@ -282,7 +369,21 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
             if keys_pressed["ESCAPE"]:
                 print("Exiting pose viewer...")
                 break
-            # Reapply pose each frame with current offsets
+            
+            # Auto-play logic - advance to next/previous pose based on direction
+            if auto_play:
+                current_pose_idx = (current_pose_idx + playback_direction) % len(poses)
+                # Clear offsets when auto-playing
+                for k in joint_offsets:
+                    joint_offsets[k] = 0.0
+            
+            # Periodic frame number display
+            current_time = time.time()
+            if current_time - last_print_time >= print_interval:
+                last_print_time = current_time
+                print(f"Frame: {current_pose_idx}/{len(poses)-1}")
+            
+            # Apply pose each frame with current offsets
             apply_pose_with_offsets()
             sim.step()
             scene.update(sim_dt)
@@ -307,9 +408,10 @@ def main():
 
     # Hardcode the pose file path (adjust if needed)
     # pose_path = "assets/crawl-pose.json"
-    pose_path = "assets/stand-pose-rc2.json"
+    # pose_path = "assets/stand-pose-rc2.json"
+    pose_path = "assets/animation_mocap_rc0_poses_sorted.json"
 
-    print(f"[INFO]: Loading pose from '{pose_path}'...")
+    print(f"[INFO]: Loading poses from '{pose_path}'...")
     run_pose_viewer(sim, scene, pose_path)
 
 
