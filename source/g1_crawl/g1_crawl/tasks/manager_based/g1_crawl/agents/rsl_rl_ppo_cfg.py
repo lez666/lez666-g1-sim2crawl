@@ -13,7 +13,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 2500
     save_interval = 250
-    experiment_name = "g1_crawl_rc10"
+    experiment_name = "g1_shamble_rc0"
     empirical_normalization = False
     clip_actions = 10.0
     policy = RslRlPpoActorCriticCfg(
@@ -36,7 +36,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
         symmetry_cfg = RslRlSymmetryCfg(
-            use_data_augmentation=False,
+            use_data_augmentation=True,
             use_mirror_loss=True,
             mirror_loss_coeff=0.5,
             data_augmentation_func=data_augmentation_func_g1,
