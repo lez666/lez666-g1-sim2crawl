@@ -29,6 +29,14 @@ from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from .g1 import G1_CFG
 
 ##
+# Constants
+##
+
+# DEFAULT_POSE_PATH = "assets/default-pose.json"
+DEFAULT_POSE_PATH = "assets/stand-pose-rc2.json"
+
+
+##
 # Scene definition
 ##
 
@@ -261,7 +269,7 @@ class EventCfg:
         func=mdp.reset_to_pose_json,
         mode="reset",
         params={
-            "json_path": "assets/default-pose.json",
+            "json_path": DEFAULT_POSE_PATH,
             # Root pose noise (position in meters, angles in radians)
             "pose_range": {
                 "x": (-0.1, 0.1),
@@ -419,7 +427,7 @@ class RewardsCfg:
         func=mdp.pose_json_deviation_l1,
         weight=-0.1,
         params={
-            "pose_path": "assets/default-pose.json",
+            "pose_path": DEFAULT_POSE_PATH,
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
         },
     )
@@ -428,7 +436,7 @@ class RewardsCfg:
         func=mdp.pose_json_deviation_l1,
         weight=-0.1,
         params={
-            "pose_path": "assets/default-pose.json",
+            "pose_path": DEFAULT_POSE_PATH,
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[
@@ -446,7 +454,7 @@ class RewardsCfg:
         func=mdp.pose_json_deviation_l1,
         weight=-0.1,
         params={
-            "pose_path": "assets/default-pose.json",
+            "pose_path": DEFAULT_POSE_PATH,
             "asset_cfg": SceneEntityCfg("robot", joint_names="waist_yaw_joint")
         },
     )
