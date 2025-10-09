@@ -353,11 +353,12 @@ class CurriculumCfg:
         func=mdp.modify_term_cfg,
         params={
             "address": "events.reset_robot.params.frame_range",
-            "modify_fn": mdp.expand_frame_range_linear_reverse,
+            "modify_fn": mdp.expand_frame_range_exponential_reverse,
             "modify_params": {
                 "total_frames": 5797,  # Total poses in sorted-poses-rc2.json
                 "start_frames": 1,     # Start with just pose 5796 (crawling pose)
-                "warmup_steps": 50000, # Reach all poses by 50k steps (~3.5M env steps with 4096 envs)
+                "warmup_steps": 70000, # Reach all poses by 50k steps (~3.5M env steps with 4096 envs)
+                "exponent": 4.0,
             }
         }
     )
@@ -370,8 +371,8 @@ class CurriculumCfg:
             "modify_fn": mdp.ramp_end_anchor_probability,
             "modify_params": {
                 "target_prob": 0.1,   # Final probability (10% of resets from standing pose)
-                "start_step": 40000,  # Start ramping at 80% of warmup
-                "end_step": 50000,    # Reach target at end of warmup
+                "start_step": 60000,  # Start ramping at 80% of warmup
+                "end_step": 75000,    # Reach target at end of warmup
             }
         }
     )

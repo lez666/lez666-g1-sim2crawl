@@ -12,8 +12,8 @@ import nanoid as nano
 OMIT_PARAM = "__OMIT__"
 
 # Experiment configuration
-TASK_NAME = "g1-shamble"
-EXPERIMENT_NAME = "g1_shamble_finalizing_v9"  
+TASK_NAME = "g1-crawl2shamble"
+EXPERIMENT_NAME = "g1_crawl2shamble_curriculum_v4"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -28,17 +28,8 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        # "env.rewards.track_ang_vel_z_exp.weight": [1.0, 2.0, 3.0],
-        # "env.rewards.track_ang_vel_z_exp.weight": [1.0, 2.0, 3.0],
-
-        # "env.commands.base_velocity.resampling_time_range": ["__OMIT__", "[3.,15.]"],
-        # "agent.algorithm.symmetry_cfg.use_mirror_loss": [True, False],
-        "agent.algorithm.symmetry_cfg.use_data_augmentation": [True, False],
-        "agent.algorithm.symmetry_cfg.mirror_loss_coeff": [ 0.5, 1.0],
-
-        # "env.rewards.feet_air_time.params.threshold": [0.1,0.15,.2],
-
-        # "env.events.push_robot.interval_range_s": [[1000.0,1000.0], [3.0, 5.0]],
+        "env.curriculum.animation_difficulty.params.modify_params.exponent": [2.0, 3.0, 4.0],
+        # "env.curriculum.end_anchor_difficulty.params.modify_params.start_step": [50000, 60000],
         
         # Example: sweep between omitting (use default) and setting to null
     },
