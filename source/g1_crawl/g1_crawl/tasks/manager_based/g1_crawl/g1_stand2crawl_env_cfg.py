@@ -222,16 +222,23 @@ class EventCfg:
     # reset
     # Curriculum-aware pose array reset with progressive difficulty
     # Uses pose_viewer.py format (pose array with base_pos/base_rpy/joints)
+    
+    # STAND2CRAWL configuration (forward through sorted poses)
     reset_base = EventTerm(
         func=mdp.reset_from_pose_array_with_curriculum,
         mode="reset",
         params={
-            "json_path": "assets/animation_mocap_rc0_poses_sorted.json",
+            "json_path": "assets/sorted-poses-rc2.json",
             
-            # Curriculum parameters: start with only home frame, expand over time
-            "frame_range": (0, 0),  # Start with frame 0 only - curriculum will expand this
-            "home_frame": 0,  # Frame 0 is the "home base" default pose
-            "home_frame_prob": 0.3,  # Always maintain 30% probability of sampling home frame
+            # Curriculum parameters: start with standing, expand to include crawling
+            "frame_range": (0, 0),  # Start with pose 0 only - curriculum will expand this
+            "home_frame": 0,        # Pose 0 (standing) is the start anchor
+            "home_frame_prob": 0.3, # 30% always sample standing pose
+            
+            # Optional: Add end anchor for dual-anchor curriculum (starts at 0, ramped up by curriculum)
+            "end_home_frame": 5794,       # Pose 5794 (crawling) is the end anchor
+            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+            # Curriculum will increase this to ~0.1 in final stages
 
             # Small random offsets on root pose at reset (position in meters, angles in radians)
             "pose_range": {
@@ -253,9 +260,30 @@ class EventCfg:
             },
             "position_range": (0.9, 1.1),
             "joint_velocity_range": (0.0, 0.0),
-
         },
     )
+    
+    # CRAWL2STAND configuration (reverse through sorted poses) - EXAMPLE
+    # Uncomment and use this for crawl2stand training:
+    # reset_base = EventTerm(
+    #     func=mdp.reset_from_pose_array_with_curriculum,
+    #     mode="reset",
+    #     params={
+    #         "json_path": "assets/animation_mocap_rc0_poses_sorted.json",
+    #         
+    #         # Curriculum parameters: start with crawling, expand to include standing
+    #         "frame_range": (5794, 5794),  # Start with last pose only - curriculum will expand backward
+    #         "home_frame": 5794,           # Pose 5794 (crawling) is the start anchor
+    #         "home_frame_prob": 0.3,       # 30% always sample crawling pose
+    #         
+    #         # Optional: Add standing as end anchor
+    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
+    #         "end_home_frame_prob": 0.1,   # 10% always sample standing pose
+    #         # Now: 30% crawling, 10% standing, 60% from curriculum range
+    #         
+    #         # ... same pose_range, velocity_range, etc. ...
+    #     },
+    # )
     # reset_base = EventTerm(
     #     func=mdp.reset_from_animation,
     #     mode="reset",
@@ -273,98 +301,6 @@ class EventCfg:
 # class CurriculumCfg:
 #     """Curriculum terms for the MDP."""
 
-#     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
-def override_value(env, env_ids, data, value, num_steps):
-    # if env.common_step_counter % 1000 == 0:  # print every 1000 steps
-    # print(f"[curriculum probe] common_step_counter={env.common_step_counter}, "
-    #     f"num_steps={num_steps}")
-    if env.common_step_counter > num_steps:
-        # print(f"[curriculum trigger] triggered at step {env.common_step_counter}")
-        return value
-    return mdp.modify_term_cfg.NO_CHANGE
-
-
-def expand_frame_range_linear(env, env_ids, data, total_frames, start_frames=1, warmup_steps=50000):
-    """Expand animation frame range linearly from start_frames to total_frames over warmup_steps.
-    
-    This curriculum function gradually expands the range of animation frames available for reset sampling.
-    It starts with only the first few frames (easier poses) and progressively includes more challenging
-    poses as training progresses.
-    
-    Args:
-        env: The learning environment
-        env_ids: Environment IDs (not used, but required by curriculum API)
-        data: Current value (not used for this curriculum)
-        total_frames: Maximum number of frames to reach at the end of warmup
-        start_frames: Number of frames to start with (default 1 = only home frame)
-        warmup_steps: Number of training steps to reach full frame range
-    
-    Returns:
-        Tuple (min_frame, max_frame) representing the current frame range.
-        min_frame is always 0 (home frame always available).
-        max_frame increases from start_frames to total_frames over warmup_steps.
-    
-    Example:
-        At step 0: returns (0, 1) - only frames 0-1 available
-        At step 25000: returns (0, 150) - frames 0-150 available (halfway through 300)
-        At step 50000+: returns (0, 300) - all frames available
-    """
-    # Calculate progress (0.0 at start, 1.0 at warmup_steps)
-    progress = min(1.0, float(env.common_step_counter) / float(warmup_steps))
-    
-    # Linearly interpolate from start_frames to total_frames
-    max_frame = int(start_frames + (total_frames - start_frames) * progress)
-    
-    # Always start from frame 0 (home frame)
-    min_frame = 0
-    
-    # Only update if we've progressed beyond the initial state
-    if env.common_step_counter > 0:
-        return (min_frame, max_frame)
-    else:
-        return mdp.modify_term_cfg.NO_CHANGE
-
-
-def expand_frame_range_exponential(env, env_ids, data, total_frames, start_frames=1, warmup_steps=50000, exponent=2.0):
-    """Expand animation frame range exponentially for slower early progress, faster later.
-    
-    Similar to expand_frame_range_linear, but uses an exponential curve. This keeps the robot
-    practicing easier poses for longer before introducing harder ones more rapidly later in training.
-    
-    Args:
-        env: The learning environment
-        env_ids: Environment IDs (not used, but required by curriculum API)
-        data: Current value (not used for this curriculum)
-        total_frames: Maximum number of frames to reach at the end of warmup
-        start_frames: Number of frames to start with (default 1 = only home frame)
-        warmup_steps: Number of training steps to reach full frame range
-        exponent: Exponential power (2.0 = quadratic, higher = slower start)
-    
-    Returns:
-        Tuple (min_frame, max_frame) representing the current frame range.
-    
-    Example with exponent=2.0:
-        At step 0: returns (0, 1)
-        At step 25000: returns (0, 75) - only 25% of frames (slower than linear)
-        At step 43000: returns (0, 225) - 75% of frames (catching up)
-        At step 50000+: returns (0, 300) - all frames
-    """
-    # Calculate progress (0.0 at start, 1.0 at warmup_steps)
-    progress = min(1.0, float(env.common_step_counter) / float(warmup_steps))
-    
-    # Apply exponential curve
-    progress_exp = progress ** exponent
-    
-    # Interpolate from start_frames to total_frames
-    max_frame = int(start_frames + (total_frames - start_frames) * progress_exp)
-    
-    min_frame = 0
-    
-    if env.common_step_counter > 0:
-        return (min_frame, max_frame)
-    else:
-        return mdp.modify_term_cfg.NO_CHANGE
-
 
 
 @configclass
@@ -376,11 +312,25 @@ class CurriculumCfg:
         func=mdp.modify_term_cfg,
         params={
             "address": "events.reset_base.params.frame_range",
-            "modify_fn": expand_frame_range_linear,
+            "modify_fn": mdp.expand_frame_range_linear,
             "modify_params": {
                 "total_frames": 5795,  # Total poses in animation_mocap_rc0_poses_sorted.json
                 "start_frames": 1,     # Start with just pose 0 (home pose)
                 "warmup_steps": 50000, # Reach all poses by 50k steps (~3.5M env steps with 4096 envs)
+            }
+        }
+    )
+    
+    # Ramp up end anchor probability in final training stages
+    end_anchor_difficulty = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.reset_base.params.end_home_frame_prob",
+            "modify_fn": mdp.ramp_end_anchor_probability,
+            "modify_params": {
+                "target_prob": 0.1,   # Final probability (10% of resets from crawling pose)
+                "start_step": 40000,  # Start ramping at 80% of warmup
+                "end_step": 50000,    # Reach target at end of warmup
             }
         }
     )
@@ -390,7 +340,7 @@ class CurriculumCfg:
         func=mdp.modify_term_cfg,
         params={
             "address": "events.push_robot.interval_range_s",
-            "modify_fn": override_value,
+            "modify_fn": mdp.override_value,
             "modify_params": {"value": (3, 10), "num_steps": 36000}
         }
     )

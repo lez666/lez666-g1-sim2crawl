@@ -500,6 +500,8 @@ def reset_from_pose_array_with_curriculum(
     frame_range: tuple[int, int] = (0, -1),
     home_frame: int = 0,
     home_frame_prob: float = 0.3,
+    end_home_frame: int | None = None,
+    end_home_frame_prob: float = 0.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     pose_range: dict[str, tuple[float, float]] | None = None,
     velocity_range: dict[str, tuple[float, float]] | None = None,
@@ -510,7 +512,7 @@ def reset_from_pose_array_with_curriculum(
     
     This function works with pose_viewer.py style JSON files that contain a list of poses
     with base_pos, base_rpy, and joint positions. It samples poses within a specified range,
-    with special handling for a "home base" pose that's always available.
+    with special handling for "anchor" poses (start home and/or end home) that are always available.
     
     Pose array format:
     {
@@ -525,7 +527,8 @@ def reset_from_pose_array_with_curriculum(
     }
     
     Sampling strategy:
-    - With probability `home_frame_prob`, sample the home pose
+    - With probability `home_frame_prob`, sample the start home pose
+    - With probability `end_home_frame_prob`, sample the end home pose
     - Otherwise, sample uniformly from [min_pose, max_pose] range
     - The frame_range can be dynamically expanded by a curriculum term
     
@@ -534,18 +537,27 @@ def reset_from_pose_array_with_curriculum(
         env_ids: Environment IDs to reset
         json_path: Path to pose array JSON (e.g., "assets/animation_mocap_rc0_poses_sorted.json")
         frame_range: (min_pose, max_pose) to sample from. Use -1 for max to mean "all poses"
-        home_frame: The "safe" baseline pose to always include (typically 0 for default pose)
-        home_frame_prob: Probability of sampling home_frame instead of range (0.0 = uniform, 1.0 = always home)
+        home_frame: The start "anchor" pose (typically 0 for stand2crawl, 5795 for crawl2stand)
+        home_frame_prob: Probability of sampling home_frame (0.0 = never, 1.0 = always)
+        end_home_frame: Optional end "anchor" pose (e.g., 5795 for stand2crawl). If None, not used.
+        end_home_frame_prob: Probability of sampling end_home_frame (only if end_home_frame is set)
         asset_cfg: Asset configuration
         pose_range: Optional uniform noise for base pose
         velocity_range: Optional uniform noise for base velocity
         position_range: Optional scaling range for joint positions
         joint_velocity_range: Optional scaling range for joint velocities
     
-    Example curriculum usage:
-        Start with frame_range=(0, 0) - only samples home pose
-        Expand to frame_range=(0, 100) - samples from first 100 poses, with 30% bias to home
-        Eventually frame_range=(0, -1) - samples from all poses, still 30% home pose
+    Example curriculum usage (stand2crawl - forward):
+        Start: frame_range=(0, 0), home_frame=0, end_home_frame=5795
+        Mid: frame_range=(0, 2897), home_frame=0, end_home_frame=5795
+        End: frame_range=(0, 5795), home_frame=0, end_home_frame=5795
+        Samples: 30% pose 0, 10% pose 5795, 60% from curriculum range
+    
+    Example curriculum usage (crawl2stand - reverse):
+        Start: frame_range=(5795, 5795), home_frame=5795, end_home_frame=0
+        Mid: frame_range=(2897, 5795), home_frame=5795, end_home_frame=0
+        End: frame_range=(0, 5795), home_frame=5795, end_home_frame=0
+        Samples: 30% pose 5795, 10% pose 0, 60% from curriculum range
     """
     asset: Articulation = env.scene[asset_cfg.name]
     device = asset.device
@@ -563,18 +575,34 @@ def reset_from_pose_array_with_curriculum(
     # Ensure home_frame is valid
     home_frame = max(0, min(home_frame, num_poses - 1))
     
-    # Sample poses with home frame bias
+    # Ensure end_home_frame is valid if provided
+    if end_home_frame is not None:
+        end_home_frame = max(0, min(end_home_frame, num_poses - 1))
+    
+    # Normalize probabilities if both anchors are used
+    total_anchor_prob = home_frame_prob + (end_home_frame_prob if end_home_frame is not None else 0.0)
+    if total_anchor_prob > 1.0:
+        raise ValueError(f"home_frame_prob ({home_frame_prob}) + end_home_frame_prob ({end_home_frame_prob}) must be <= 1.0")
+    
+    # Sample poses with anchor bias
     sampled_poses = []
     for _ in range(num_envs):
-        # Decide whether to sample home frame or from range
-        if torch.rand(1).item() < home_frame_prob:
+        rand_val = torch.rand(1).item()
+        
+        # Check start home frame first
+        if rand_val < home_frame_prob:
             pose_idx = home_frame
+        # Check end home frame second
+        elif end_home_frame is not None and rand_val < (home_frame_prob + end_home_frame_prob):
+            pose_idx = end_home_frame
+        # Otherwise sample from curriculum range
         else:
             # Sample uniformly from [min_pose, max_pose]
             if min_pose == max_pose:
                 pose_idx = min_pose
             else:
                 pose_idx = torch.randint(min_pose, max_pose + 1, (1,)).item()
+        
         sampled_poses.append(poses[pose_idx])
     
     # ===== ROOT STATE RESET =====
