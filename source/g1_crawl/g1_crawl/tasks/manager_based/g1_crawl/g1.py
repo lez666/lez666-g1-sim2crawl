@@ -435,6 +435,46 @@ def get_animation(json_path: str | None = None) -> dict:
     return anim_data
 
 
+def get_animation_frame_count(json_path: str | None = None) -> int:
+    """Get number of frames in animation (uses cache if available).
+    
+    This is a convenience function for curriculum configuration, allowing you to
+    automatically determine the total number of frames without hardcoding.
+    
+    Args:
+        json_path: Path to animation JSON. If None, uses default animation path.
+    
+    Returns:
+        Number of frames in the animation.
+    
+    Example:
+        ```python
+        # In your env config file
+        from g1_crawl.tasks.manager_based.g1_crawl.g1 import get_animation_frame_count
+        
+        # Get frame count for curriculum configuration
+        ANIMATION_PATH = "assets/animation_mocap_rc0_poses_sorted.json"
+        TOTAL_FRAMES = get_animation_frame_count(ANIMATION_PATH)
+        
+        # Use in curriculum config
+        curriculum = CurrTerm(
+            func=mdp.modify_term_cfg,
+            params={
+                "address": "events.reset_base.params.frame_range",
+                "modify_fn": expand_frame_range_linear,
+                "modify_params": {
+                    "total_frames": TOTAL_FRAMES,
+                    "start_frames": 1,
+                    "warmup_steps": 50000,
+                }
+            }
+        )
+        ```
+    """
+    anim = get_animation(json_path)
+    return int(anim["num_frames"])
+
+
 def build_joint_index_map(asset: Articulation, joints_meta, qpos_labels):
     robot_joint_names = asset.data.joint_names
     index_map: list[int] = []

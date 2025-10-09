@@ -34,7 +34,7 @@ from .g1 import G1_CFG
 
 
 @configclass
-class G1CrawlRobustStartSceneCfg(InteractiveSceneCfg):
+class G1Stand2CrawlSceneCfg(InteractiveSceneCfg):
   # ground terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -220,12 +220,18 @@ class EventCfg:
 
 
     # reset
-    # Replace uniform base reset with animation-based reset
+    # Curriculum-aware pose array reset with progressive difficulty
+    # Uses pose_viewer.py format (pose array with base_pos/base_rpy/joints)
     reset_base = EventTerm(
-        func=mdp.reset_from_animation_frame,
+        func=mdp.reset_from_pose_array_with_curriculum,
         mode="reset",
         params={
-            "json_path": "assets/animation_rc4.json",
+            "json_path": "assets/animation_mocap_rc0_poses_sorted.json",
+            
+            # Curriculum parameters: start with only home frame, expand over time
+            "frame_range": (0, 0),  # Start with frame 0 only - curriculum will expand this
+            "home_frame": 0,  # Frame 0 is the "home base" default pose
+            "home_frame_prob": 0.3,  # Always maintain 30% probability of sampling home frame
 
             # Small random offsets on root pose at reset (position in meters, angles in radians)
             "pose_range": {
@@ -278,17 +284,116 @@ def override_value(env, env_ids, data, value, num_steps):
     return mdp.modify_term_cfg.NO_CHANGE
 
 
+def expand_frame_range_linear(env, env_ids, data, total_frames, start_frames=1, warmup_steps=50000):
+    """Expand animation frame range linearly from start_frames to total_frames over warmup_steps.
+    
+    This curriculum function gradually expands the range of animation frames available for reset sampling.
+    It starts with only the first few frames (easier poses) and progressively includes more challenging
+    poses as training progresses.
+    
+    Args:
+        env: The learning environment
+        env_ids: Environment IDs (not used, but required by curriculum API)
+        data: Current value (not used for this curriculum)
+        total_frames: Maximum number of frames to reach at the end of warmup
+        start_frames: Number of frames to start with (default 1 = only home frame)
+        warmup_steps: Number of training steps to reach full frame range
+    
+    Returns:
+        Tuple (min_frame, max_frame) representing the current frame range.
+        min_frame is always 0 (home frame always available).
+        max_frame increases from start_frames to total_frames over warmup_steps.
+    
+    Example:
+        At step 0: returns (0, 1) - only frames 0-1 available
+        At step 25000: returns (0, 150) - frames 0-150 available (halfway through 300)
+        At step 50000+: returns (0, 300) - all frames available
+    """
+    # Calculate progress (0.0 at start, 1.0 at warmup_steps)
+    progress = min(1.0, float(env.common_step_counter) / float(warmup_steps))
+    
+    # Linearly interpolate from start_frames to total_frames
+    max_frame = int(start_frames + (total_frames - start_frames) * progress)
+    
+    # Always start from frame 0 (home frame)
+    min_frame = 0
+    
+    # Only update if we've progressed beyond the initial state
+    if env.common_step_counter > 0:
+        return (min_frame, max_frame)
+    else:
+        return mdp.modify_term_cfg.NO_CHANGE
+
+
+def expand_frame_range_exponential(env, env_ids, data, total_frames, start_frames=1, warmup_steps=50000, exponent=2.0):
+    """Expand animation frame range exponentially for slower early progress, faster later.
+    
+    Similar to expand_frame_range_linear, but uses an exponential curve. This keeps the robot
+    practicing easier poses for longer before introducing harder ones more rapidly later in training.
+    
+    Args:
+        env: The learning environment
+        env_ids: Environment IDs (not used, but required by curriculum API)
+        data: Current value (not used for this curriculum)
+        total_frames: Maximum number of frames to reach at the end of warmup
+        start_frames: Number of frames to start with (default 1 = only home frame)
+        warmup_steps: Number of training steps to reach full frame range
+        exponent: Exponential power (2.0 = quadratic, higher = slower start)
+    
+    Returns:
+        Tuple (min_frame, max_frame) representing the current frame range.
+    
+    Example with exponent=2.0:
+        At step 0: returns (0, 1)
+        At step 25000: returns (0, 75) - only 25% of frames (slower than linear)
+        At step 43000: returns (0, 225) - 75% of frames (catching up)
+        At step 50000+: returns (0, 300) - all frames
+    """
+    # Calculate progress (0.0 at start, 1.0 at warmup_steps)
+    progress = min(1.0, float(env.common_step_counter) / float(warmup_steps))
+    
+    # Apply exponential curve
+    progress_exp = progress ** exponent
+    
+    # Interpolate from start_frames to total_frames
+    max_frame = int(start_frames + (total_frames - start_frames) * progress_exp)
+    
+    min_frame = 0
+    
+    if env.common_step_counter > 0:
+        return (min_frame, max_frame)
+    else:
+        return mdp.modify_term_cfg.NO_CHANGE
+
+
 
 @configclass
 class CurriculumCfg:
-    push_event_freq = CurrTerm(
-            func=mdp.modify_term_cfg,
-            params={
-                "address": "events.push_robot.interval_range_s",   # note: `_manager.cfg` is omitted
-                "modify_fn": override_value,
-                "modify_params": {"value": (3,10), "num_steps": 36000} #24*ITERATION 
+    """Curriculum terms for progressive difficulty."""
+    
+    # Expand pose array range from easy to hard poses over training
+    animation_difficulty = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.reset_base.params.frame_range",
+            "modify_fn": expand_frame_range_linear,
+            "modify_params": {
+                "total_frames": 5795,  # Total poses in animation_mocap_rc0_poses_sorted.json
+                "start_frames": 1,     # Start with just pose 0 (home pose)
+                "warmup_steps": 50000, # Reach all poses by 50k steps (~3.5M env steps with 4096 envs)
             }
-        )
+        }
+    )
+    
+    # Push event curriculum (existing)
+    push_event_freq = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.push_robot.interval_range_s",
+            "modify_fn": override_value,
+            "modify_params": {"value": (3, 10), "num_steps": 36000}
+        }
+    )
 
 @configclass
 class RewardsCfg:
@@ -413,9 +518,9 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
 @configclass
-class G1CrawlRobustStartEnvCfg(ManagerBasedRLEnvCfg):
+class G1Stand2CrawlEnvCfg(ManagerBasedRLEnvCfg):
     # Scene settings
-    scene: G1CrawlRobustStartSceneCfg = G1CrawlRobustStartSceneCfg(num_envs=4096, env_spacing=4.0)
+    scene: G1Stand2CrawlSceneCfg = G1Stand2CrawlSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: CommandsCfg = CommandsCfg()

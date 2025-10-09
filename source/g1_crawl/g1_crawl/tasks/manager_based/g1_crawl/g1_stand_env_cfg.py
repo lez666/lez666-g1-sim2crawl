@@ -29,6 +29,14 @@ from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from .g1 import G1_CFG
 
 ##
+# Constants
+##
+
+# DEFAULT_POSE_PATH = "assets/default-pose.json"
+DEFAULT_POSE_PATH = "assets/stand-pose-rc2.json"
+
+
+##
 # Scene definition
 ##
 
@@ -81,13 +89,6 @@ class G1StandSceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    boolean_command = mdp.BooleanCommandCfg(
-        asset_name="robot",
-        resampling_time_range=(3.0, 6.0),
-        true_probability=0.5,
-        debug_vis=False
-    )
-
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
@@ -97,10 +98,9 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0., 0.5), lin_vel_y=(0.0, 0.0), ang_vel_z=(-0.5,0.5), heading=(-3.14, 3.14)
+            lin_vel_x=(0., 1.), lin_vel_y=(0.0, 0.0), ang_vel_z=(-0.5,0.5), heading=(-3.14, 3.14)
         ),
     )
-
 
 
 @configclass
@@ -121,8 +121,9 @@ class ObservationsCfg:
             func=mdp.projected_gravity,
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
+        # boolean_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "boolean_command"})
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        boolean_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "boolean_command"})
+
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action_with_log)
@@ -142,7 +143,7 @@ class ObservationsCfg:
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
         )
-        boolean_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "boolean_command"})
+        # boolean_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "boolean_command"})
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
@@ -236,11 +237,39 @@ class EventCfg:
             "torque_range": (-0.0, 0.0),
         },
     )
+
+    # reset_base = EventTerm(
+    #     func=mdp.reset_root_state_uniform,
+    #     mode="reset",
+    #     params={
+    #         "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+    #         "velocity_range": {
+    #             "x": (-0.5, 0.5),
+    #             "y": (-0.5, 0.5),
+    #             "z": (-0.5, 0.5),
+    #             "roll": (-0.5, 0.5),
+    #             "pitch": (-0.5, 0.5),
+    #             "yaw": (-0.5, 0.5),
+    #         },
+    #     },
+    # )
+
+    # reset_robot_joints = EventTerm(
+    #     func=mdp.reset_joints_by_scale,
+    #     mode="reset",
+    #     params={
+    #         "position_range": (0.5, 1.5),
+    #         "velocity_range": (0.0, 0.0),
+    #     },
+    # )
+
+    # reset
+    # Reset robot to pose from JSON with optional noise/scaling for both root and joints
     reset_robot = EventTerm(
         func=mdp.reset_to_pose_json,
         mode="reset",
         params={
-            "json_path": "assets/default-pose.json",
+            "json_path": DEFAULT_POSE_PATH,
             # Root pose noise (position in meters, angles in radians)
             "pose_range": {
                 "x": (-0.1, 0.1),
@@ -262,13 +291,11 @@ class EventCfg:
         },
     )
 
-    # reset
-    # Reset robot to random animation frame with optional noise/scaling for both root and joints
     # reset_robot = EventTerm(
-    #     func=mdp.reset_from_animation_frame,
+    #     func=mdp.reset_to_pose_json,
     #     mode="reset",
     #     params={
-    #         "json_path": "assets/animation_rc4.json",
+    #         "json_path": "assets/default-pose.json",
     #         # Root pose noise (position in meters, angles in radians)
     #         "pose_range": {
     #             "x": (-0.1, 0.1),
@@ -287,99 +314,151 @@ class EventCfg:
     #             "yaw": (-0.1, 0.1),
     #         },
 
-    #         # Joint position scaling (multiplies animation frame values)
     #         "position_range": (0.9, 1.1),
     #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
     #         "joint_velocity_range": (0.0, 0.0),
     #     },
     # )
-    
+
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity_with_viz,
         mode="interval",
-        interval_range_s=(2.0, 2.0),
+        interval_range_s=(3.0, 5.0),
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
+
 
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.2)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
+    dof_torques_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-1.0e-4,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            )
+        },
+    )
+    dof_acc_l2 = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-1.0e-7,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            )
+        },
+    )
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
         weight=-.1,
         params={
-            "target_height": 0.74,
+            "target_height": 0.76,
             "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
         },
     )
 
-    joint_deviation_all = RewTerm(
-        func=mdp.pose_json_deviation_l1,
-        weight=-0.1,
-        params={
-            "pose_path": "assets/default-pose.json",
-            "asset_cfg": SceneEntityCfg("robot")
-        },
-    )
 
-    # joint_deviation_hip_waist = RewTerm(
-    #     func=mdp.joint_deviation_l1,
-    #     weight=-0.1,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint", "waist_yaw_joint"])},
+    # undesired_contacts = None
+
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    # track_lin_vel_xy_exp = RewTerm(
+    #     func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
+    #     weight=1.0,
+    #     params={"command_name": "base_velocity", "std": 0.5},
     # )
-
-    # joint_deviation_upper_body = RewTerm(
-    #     func=mdp.joint_deviation_l1,
-    #     weight=-0.2,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_.*_joint", ".*_elbow_joint", ".*_wrist_.*_joint"])},
+    # track_ang_vel_z_exp = RewTerm(
+    #     func=mdp.track_ang_vel_z_world_exp, weight=1.0, params={"command_name": "base_velocity", "std": 0.5}
     # )
-
-    # joint_deviation_all = RewTerm(
-    #     func=mdp.joint_deviation_l1,
-    #     weight=-1.0,
-    #     params={"asset_cfg": SceneEntityCfg("robot")},
-    # )
-
-
-
-    # slippage = RewTerm(
-    #     func=mdp.feet_slide, 
-    #     weight=-1.0,
-    #             params={
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_positive_biped,
+    #     weight=3.,
+    #     params={
+    #         "command_name": "base_velocity",
     #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+    #         "threshold": 0.2,
     #     },
     # )
 
-    # feet_on_ground = RewTerm(
-    #     func=mdp.both_feet_on_ground, 
-    #     weight=10.0,       
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
+    both_feet_air = RewTerm(
+        func=mdp.both_feet_air,
+        weight=-0.5,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+        },
+    )
+
+    feet_slide = RewTerm(
+        func=mdp.feet_slide,
+        weight=-0.1,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+        },
+    )
+
+    # Penalize ankle joint limits
+    # dof_pos_limits = RewTerm(
+    #     func=mdp.joint_pos_limits,
+    #     weight=-1.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"])},
     # )
-
-    lin_vel_l2 = RewTerm(func=mdp.lin_vel_l2, weight=-.1)
-    ang_vel_l2 = RewTerm(func=mdp.ang_vel_l2, weight=-.1)
-
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
-
-    #limits
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-1.0,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     torque_limits = RewTerm(
         func=mdp.applied_torque_limits,
-        weight=-1.0,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
+    
+    # Penalize deviation from target pose for non-essential locomotion joints
+    pose_deviation_hip = RewTerm(
+        func=mdp.pose_json_deviation_l1,
+        weight=-0.1,
+        params={
+            "pose_path": DEFAULT_POSE_PATH,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
+        },
+    )
+    
+    pose_deviation_arms = RewTerm(
+        func=mdp.pose_json_deviation_l1,
+        weight=-0.1,
+        params={
+            "pose_path": DEFAULT_POSE_PATH,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    ".*_shoulder_pitch_joint",
+                    ".*_shoulder_roll_joint",
+                    ".*_shoulder_yaw_joint",
+                    ".*_elbow_joint",
+                    ".*_wrist_roll_joint",
+                ],
+            )
+        },
+    )
+    
+    pose_deviation_torso = RewTerm(
+        func=mdp.pose_json_deviation_l1,
+        weight=-0.1,
+        params={
+            "pose_path": DEFAULT_POSE_PATH,
+            "asset_cfg": SceneEntityCfg("robot", joint_names="waist_yaw_joint")
+        },
+    )
 
-    #regulatorization
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-2)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-
-   
 
 @configclass
 class TerminationsCfg:

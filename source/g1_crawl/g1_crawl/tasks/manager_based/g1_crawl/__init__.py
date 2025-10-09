@@ -23,23 +23,12 @@ gym.register(
     },
 )
 
-
 gym.register(
-    id="g1-robuststart",
+    id="g1-stand2crawl",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_crawl_robuststart_env_cfg:G1CrawlRobustStartEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="g1-transition",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_crawl_transition_env_cfg:G1CrawlTransitionEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.g1_stand2crawl_env_cfg:G1Stand2CrawlEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
     },
 )
