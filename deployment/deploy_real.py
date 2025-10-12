@@ -142,6 +142,17 @@ class Controller:
         joint_limits = np.array(RESTRICTED_JOINT_RANGE, dtype=np.float32)
         self._joint_lower_bounds = joint_limits[:, 0]
         self._joint_upper_bounds = joint_limits[:, 1]
+        
+        # Safety monitoring for neural network control
+        self._prev_qj = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+        self._prev_dqj = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+        self._safety_initialized = False
+        
+        # Safety thresholds
+        self._max_position_jump = 0.3  # rad per timestep (15 rad/s at 20ms)
+        self._max_velocity = 25.0  # rad/s
+        self._max_acceleration = 1500.0  # rad/s^2
+        self._max_action_magnitude = 5.0  # Action output limit
 
         # Static velocity command placeholder; keyboard controls removed
 
@@ -253,6 +264,90 @@ class Controller:
             return False
         return True
 
+    def check_safety_limits(self, pytorch_actions: np.ndarray) -> bool:
+        """
+        Check if current state violates safety limits (position jumps, velocity spikes, etc.)
+        Returns True if safe, False if safety violation detected.
+        """
+        if not self._safety_initialized:
+            # First iteration - just store current state
+            self._prev_qj = self.qj.copy()
+            self._prev_dqj = self.dqj.copy()
+            self._safety_initialized = True
+            return True
+        
+        # Check 1: Position jumps
+        position_delta = np.abs(self.qj - self._prev_qj)
+        max_position_delta = np.max(position_delta)
+        position_jump_joint = np.argmax(position_delta)
+        
+        if max_position_delta > self._max_position_jump:
+            print("=" * 60)
+            print("SAFETY VIOLATION: POSITION JUMP DETECTED!")
+            print(f"Joint {position_jump_joint} jumped {max_position_delta:.3f} rad in one timestep")
+            print(f"(threshold: {self._max_position_jump:.3f} rad)")
+            print(f"Current pos: {self.qj[position_jump_joint]:.3f}, Previous: {self._prev_qj[position_jump_joint]:.3f}")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Check 2: Velocity spikes
+        velocity_magnitude = np.abs(self.dqj)
+        max_velocity = np.max(velocity_magnitude)
+        velocity_spike_joint = np.argmax(velocity_magnitude)
+        
+        if max_velocity > self._max_velocity:
+            print("=" * 60)
+            print("SAFETY VIOLATION: VELOCITY SPIKE DETECTED!")
+            print(f"Joint {velocity_spike_joint} velocity: {self.dqj[velocity_spike_joint]:.3f} rad/s")
+            print(f"(threshold: {self._max_velocity:.3f} rad/s)")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Check 3: Acceleration spikes
+        acceleration = (self.dqj - self._prev_dqj) / self.control_dt
+        max_acceleration = np.max(np.abs(acceleration))
+        acceleration_spike_joint = np.argmax(np.abs(acceleration))
+        
+        if max_acceleration > self._max_acceleration:
+            print("=" * 60)
+            print("SAFETY VIOLATION: ACCELERATION SPIKE DETECTED!")
+            print(f"Joint {acceleration_spike_joint} acceleration: {acceleration[acceleration_spike_joint]:.1f} rad/s^2")
+            print(f"(threshold: {self._max_acceleration:.1f} rad/s^2)")
+            print(f"Velocity changed from {self._prev_dqj[acceleration_spike_joint]:.3f} to {self.dqj[acceleration_spike_joint]:.3f} rad/s")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Check 4: Action output magnitude
+        max_action = np.max(np.abs(pytorch_actions))
+        max_action_joint = np.argmax(np.abs(pytorch_actions))
+        
+        if max_action > self._max_action_magnitude:
+            print("=" * 60)
+            print("SAFETY VIOLATION: ACTION MAGNITUDE TOO LARGE!")
+            print(f"Joint {max_action_joint} action: {pytorch_actions[max_action_joint]:.3f}")
+            print(f"(threshold: {self._max_action_magnitude:.3f})")
+            print("Model may be producing unsafe outputs.")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Update previous state for next iteration
+        self._prev_qj = self.qj.copy()
+        self._prev_dqj = self.dqj.copy()
+        
+        return True
+
     def process_global_buttons(self):
         # Select: immediate quit (ALWAYS ACTIVE)
         if self._rising("Select", self.remote.Select):
@@ -281,11 +376,14 @@ class Controller:
             print("Y pressed: Entering damped mode.")
             self.control_mode = "damped"
             self.hold_target_pose = None
+            self._safety_initialized = False  # Reset safety monitoring
         # X: Neural network control
         if self._rising("X", self.remote.X):
             print("X pressed: Entering neural network control mode.")
+            print("Safety monitoring active: position jumps, velocity spikes, acceleration, and action magnitude will be checked.")
             self.control_mode = "policy"
             self.hold_target_pose = None
+            self._safety_initialized = False  # Reset safety monitoring for fresh start
         # A: Lerp to crawl pose and hold
         if self._rising("A", self.remote.A):
             print("A pressed: Moving to set pose and holding.")
@@ -521,6 +619,15 @@ class Controller:
         # Get actions from policy (in PyTorch order)
         pytorch_actions = self.policy.get_control(obs)
         
+        # SAFETY CHECK: Verify state and actions are safe before proceeding
+        if not self.check_safety_limits(pytorch_actions):
+            # Safety violation detected - check_safety_limits already switched to damped mode
+            # Send damping command and return early
+            create_damping_cmd(self.low_cmd)
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.control_dt)
+            return
+        
         # Store last action in PyTorch order for next observation
         self.last_action_pytorch = pytorch_actions.copy()
         
@@ -543,6 +650,8 @@ class Controller:
             for idx in clamped_indices:
                 print(f"  Joint {idx}: {motor_targets_unclamped[idx]:.3f} -> {motor_targets[idx]:.3f} (limits: [{self._joint_lower_bounds[idx]:.3f}, {self._joint_upper_bounds[idx]:.3f}])")
 
+        # print(f"Kp: {Kp}")
+        # print(f"Kd: {Kd}")
         # Build low cmd
         for i in range(G1_NUM_MOTOR):
             motor_idx = joint2motor_idx[i]
@@ -605,6 +714,11 @@ if __name__ == "__main__":
     print("  Select: QUIT immediately")
     print("\nSafety features:")
     print("  - Remote heartbeat: Auto-damped if remote disconnects (timeout: 0.5s)")
+    print("  - Position jump detection: Max 0.3 rad/timestep (15 rad/s)")
+    print("  - Velocity spike detection: Max 25.0 rad/s")
+    print("  - Acceleration spike detection: Max 1500 rad/s^2")
+    print("  - Action magnitude limit: Max 5.0")
+    print("  - Auto-damped mode on any safety violation")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
