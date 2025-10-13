@@ -265,28 +265,67 @@ class EventCfg:
 
     # reset
     # Reset robot to pose from JSON with optional noise/scaling for both root and joints
+    # reset_robot = EventTerm(
+    #     func=mdp.reset_to_pose_json,
+    #     mode="reset",
+    #     params={
+    #         "json_path": DEFAULT_POSE_PATH,
+    #         # Root pose noise (position in meters, angles in radians)
+    #         "pose_range": {
+    #             "x": (-0.1, 0.1),
+    #             "y": (-0.1, 0.1),
+    #             "yaw": (-3.14, 3.14),
+    #         },
+    #         "velocity_range": {
+    #             "x": (0.0, 0.0),
+    #             "y": (0.0, 0.0),
+    #             "z": (0.0, 0.0),
+    #             "roll": (0.0, 0.0),
+    #             "pitch": (0.0, 0.0),
+    #             "yaw": (0.0, 0.0),
+    #         },
+
+    #         "position_range": (0.9, 1.1),
+    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
+    #         "joint_velocity_range": (0.0, 0.0),
+    #     },
+    # )
+
     reset_robot = EventTerm(
-        func=mdp.reset_to_pose_json,
+        func=mdp.reset_from_pose_array_with_curriculum,
         mode="reset",
         params={
-            "json_path": DEFAULT_POSE_PATH,
-            # Root pose noise (position in meters, angles in radians)
+            "json_path": "assets/sorted-poses-rc3.json",
+            
+            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+            "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
+            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+            "home_frame_prob": 0.3,       # 30% always sample crawling pose
+            
+            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+            "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
+            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+            # Curriculum will increase this to ~0.1 in final stages
+
+            # Small random offsets on root pose at reset (position in meters, angles in radians)
             "pose_range": {
                 "x": (-0.1, 0.1),
                 "y": (-0.1, 0.1),
+                "z": (-0.05, 0.05),
+                "roll": (-0.10, 0.10),
+                "pitch": (-0.10, 0.10),
                 "yaw": (-3.14, 3.14),
             },
+            # Small random root velocity at reset (linear m/s, angular rad/s)
             "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z":(-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch":(-0.1, 0.1),
+                "yaw":(-0.1, 0.1)
             },
-
             "position_range": (0.9, 1.1),
-            # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
             "joint_velocity_range": (0.0, 0.0),
         },
     )
@@ -364,6 +403,15 @@ class RewardsCfg:
         },
     )
 
+    # both_feet_on_ground_stationary = RewTerm(
+    #     func=mdp.both_feet_on_ground_when_stationary,
+    #     weight=-.1,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "threshold": 0.1,
+    #     },
+    # )
 
     # undesired_contacts = None
 
@@ -469,6 +517,21 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
     )
+
+# @configclass
+# class CurriculumCfg:
+#     """Curriculum terms for progressive difficulty."""
+    
+
+#     both_feet_weight = CurrTerm(
+#         func=mdp.modify_term_cfg,
+#         params={
+#             "address":  "rewards.both_feet_on_ground_stationary.weight",   # note: `_manager.cfg` is omitted
+#             "modify_fn": mdp.override_value,
+#             "modify_params": {"value": -1.0, "num_steps": 24*2000}
+#         }
+#     )
+
 
 @configclass
 class G1ShambleEnvCfg(ManagerBasedRLEnvCfg):

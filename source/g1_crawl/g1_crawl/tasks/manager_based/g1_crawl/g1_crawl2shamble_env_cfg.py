@@ -268,73 +268,73 @@ class EventCfg:
     # Uses pose_viewer.py format (pose array with base_pos/base_rpy/joints)
     # Progresses BACKWARD from crawling (5796) to standing (0)
     
-    reset_robot = EventTerm(
-        func=mdp.reset_from_pose_array_with_curriculum,
-        mode="reset",
-        params={
-            "json_path": "assets/sorted-poses-rc2.json",
-            
-            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
-            "frame_range": (5796, 5796),  # Start with last pose only - curriculum will expand backward
-            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
-            "home_frame_prob": 0.3,       # 30% always sample crawling pose
-            
-            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
-            "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
-            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
-            # Curriculum will increase this to ~0.1 in final stages
-
-            # Small random offsets on root pose at reset (position in meters, angles in radians)
-            "pose_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "z": (-0.05, 0.05),
-                "roll": (-0.10, 0.10),
-                "pitch": (-0.10, 0.10),
-                "yaw": (-3.14, 3.14),
-            },
-            # Small random root velocity at reset (linear m/s, angular rad/s)
-            "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
-            },
-            "position_range": (0.9, 1.1),
-            "joint_velocity_range": (0.0, 0.0),
-        },
-    )
-
     # reset_robot = EventTerm(
-    #     func=mdp.reset_to_pose_json,
+    #     func=mdp.reset_from_pose_array_with_curriculum,
     #     mode="reset",
     #     params={
-    #         "json_path": "assets/default-pose.json",
-    #         # Root pose noise (position in meters, angles in radians)
+    #         "json_path": "assets/sorted-poses-rc2.json",
+            
+    #         # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+    #         "frame_range": (5796, 5796),  # Start with last pose only - curriculum will expand backward
+    #         "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+    #         "home_frame_prob": 0.3,       # 30% always sample crawling pose
+            
+    #         # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
+    #         "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+    #         # Curriculum will increase this to ~0.1 in final stages
+
+    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
     #         "pose_range": {
     #             "x": (-0.1, 0.1),
     #             "y": (-0.1, 0.1),
-    #             "z": (-0.1, 0.1),
-    #             "roll": (-0.1, 0.1),
-    #             "pitch": (-0.1, 0.1),
-    #             # "yaw": (-3.14, 3.14),
+    #             "z": (-0.05, 0.05),
+    #             "roll": (-0.10, 0.10),
+    #             "pitch": (-0.10, 0.10),
+    #             "yaw": (-3.14, 3.14),
     #         },
+    #         # Small random root velocity at reset (linear m/s, angular rad/s)
     #         "velocity_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "z": (-0.1, 0.1),
-    #             "roll": (-0.1, 0.1),
-    #             "pitch": (-0.1, 0.1),
-    #             "yaw": (-0.1, 0.1),
+    #             "x": (0.0, 0.0),
+    #             "y": (0.0, 0.0),
+    #             "z": (0.0, 0.0),
+    #             "roll": (0.0, 0.0),
+    #             "pitch": (0.0, 0.0),
+    #             "yaw": (0.0, 0.0),
     #         },
-
     #         "position_range": (0.9, 1.1),
-    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
     #         "joint_velocity_range": (0.0, 0.0),
     #     },
     # )
+
+    reset_robot = EventTerm(
+        func=mdp.reset_to_pose_json,
+        mode="reset",
+        params={
+            "json_path": "assets/default-pose.json",
+            # Root pose noise (position in meters, angles in radians)
+            "pose_range": {
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                # "yaw": (-3.14, 3.14),
+            },
+            "velocity_range": {
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1),
+            },
+
+            "position_range": (0.9, 1.1),
+            # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
+            "joint_velocity_range": (0.0, 0.0),
+        },
+    )
 
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity_with_viz,

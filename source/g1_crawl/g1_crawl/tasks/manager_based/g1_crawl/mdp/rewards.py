@@ -51,6 +51,40 @@ def both_feet_on_ground(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
     return both_feet_in_contact.float()
 
+
+def both_feet_on_ground_when_stationary(
+    env, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float = 0.1
+) -> torch.Tensor:
+    """Penalize when both feet are NOT in contact with the ground during stationary commands.
+
+    This function penalizes the agent when both feet are not in contact with the ground
+    during stationary commands (velocity near zero). This encourages stable bipedal 
+    stance when not moving.
+    
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command to check.
+        sensor_cfg: Configuration for the contact sensor.
+        threshold: Velocity command threshold below which penalty applies (default: 0.1).
+
+    Returns:
+        1 if both feet are NOT in contact and commands are near zero, 0 otherwise.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # Check if feet are in contact using contact time
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    # Count feet in contact
+    both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
+    # Invert: penalty when feet are NOT both on ground
+    penalty = 1.0 - both_feet_in_contact.float()
+    # Only apply penalty when velocity commands are near zero (stationary)
+    cmd = env.command_manager.get_command(command_name)
+    # Check both linear (xy) and angular (z) velocity commands
+    cmd_magnitude = torch.sqrt(cmd[:, 0]**2 + cmd[:, 1]**2 + cmd[:, 2]**2)
+    is_stationary = cmd_magnitude < threshold
+    return penalty * is_stationary.float()
+
 def feet_air_time(
     env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
 ) -> torch.Tensor:

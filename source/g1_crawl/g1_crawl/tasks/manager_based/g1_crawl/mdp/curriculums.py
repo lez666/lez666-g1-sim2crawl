@@ -286,6 +286,52 @@ def ramp_end_anchor_probability(env, env_ids, data, target_prob=0.1, start_step=
     else:
         return modify_term_cfg.NO_CHANGE
 
+
+def ramp_weight_linear(env, env_ids, data, initial_weight=0.0, target_weight=-10.0, start_step=0, end_step=50000):
+    """Linearly ramp a reward weight from initial to target value over training.
+    
+    This curriculum function gradually changes a reward term weight, useful for
+    introducing penalties progressively as the policy learns the basic task first.
+    
+    Args:
+        env: The learning environment
+        env_ids: Environment IDs (not used, but required by curriculum API)
+        data: Current value (not used for this curriculum)
+        initial_weight: Starting weight value (e.g., 0.0 for no penalty)
+        target_weight: Final weight value (e.g., -10.0 for full penalty)
+        start_step: Step to start ramping (default 0 = ramp from beginning)
+        end_step: Step to reach target_weight
+    
+    Returns:
+        Float weight value for the reward term.
+    
+    Example with initial_weight=0.0, target_weight=-10.0, start_step=0, end_step=50000:
+        At step 0: returns 0.0 (no penalty)
+        At step 25000: returns -5.0 (half penalty)
+        At step 50000+: returns -10.0 (full penalty)
+    
+    Usage:
+        Allows the robot to learn basic locomotion first without harsh penalties,
+        then progressively adds penalties like undesired contact as it improves.
+    """
+    step = env.common_step_counter
+    
+    # Before start_step: use initial weight
+    if step < start_step:
+        weight = initial_weight
+    # After end_step: use full target weight
+    elif step >= end_step:
+        weight = target_weight
+    # During ramp: linear interpolation
+    else:
+        progress = (step - start_step) / (end_step - start_step)
+        weight = initial_weight + (target_weight - initial_weight) * progress
+    
+    if env.common_step_counter > 0:
+        return weight
+    else:
+        return modify_term_cfg.NO_CHANGE
+
 # from __future__ import annotations
 
 # from collections.abc import Sequence
