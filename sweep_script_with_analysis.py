@@ -13,7 +13,7 @@ OMIT_PARAM = "__OMIT__"
 
 # Experiment configuration
 TASK_NAME = "g1-crawl-start"
-EXPERIMENT_NAME = "g1_crawl-start-sweep_v3"  
+EXPERIMENT_NAME = "g1_crawl-start-sweep_v5"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -28,7 +28,13 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.no_jumps.weight": [-0.1, 0.0],
+        "env.rewards.com_forward_lean.weight": [1.0,0.3],
+        # "env.rewards.pose_deviation_all.weight": [-0.3,-0.1],
+        "env.rewards.both_feet_air.weight": [-3.0, -1.0],
+        "env.rewards.both_hand_air.weight": [-3.0, -1.0]
+
+
+
 
         # "env.curriculum.end_anchor_difficulty.params.modify_params.start_step": [50000, 60000],
         

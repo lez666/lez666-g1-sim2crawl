@@ -265,70 +265,70 @@ class EventCfg:
     #     },
     # )
 
-    # reset_base = EventTerm(
-    #     func=mdp.reset_from_pose_array_with_curriculum,
-    #     mode="reset",
-    #     params={
-    #         "json_path": "assets/sorted-poses-rc3.json",
-            
-    #         # Curriculum parameters: start with crawling, expand BACKWARD to include standing
-    #         "frame_range": (0, 0),  # Start with last pose only - curriculum will expand backward
-    #         "home_frame": 0,           # Pose 5796 (crawling) is the start anchor
-    #         "home_frame_prob": 0.1,       # 30% always sample crawling pose
-            
-    #         # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
-    #         "end_home_frame": 5796,          # Pose 0 (standing) is the end anchor
-    #         "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
-    #         # Curriculum will increase this to ~0.1 in final stages
-
-    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
-    #         "pose_range": {
-    #             "x": (-0.05, 0.05),
-    #             "y": (-0.05, 0.05),
-    #             "z": (-0.05, 0.05),
-    #             "roll": (-0.050, 0.050),
-    #             "pitch": (-0.050, 0.050),
-    #             "yaw": (-3.14, 3.14),
-    #         },
-    #         # Small random root velocity at reset (linear m/s, angular rad/s)
-    #         "velocity_range": {
-    #             "x":  (-0.05, 0.05),
-    #             "y":  (-0.05, 0.05),
-    #             "z": (-0.05, 0.05),
-    #             "roll":  (-0.05, 0.05),
-    #             "pitch": (-0.05, 0.05),
-    #             "yaw": (-0.05, 0.05),
-    #         },
-    #         "position_range": (0.95, 1.05),
-    #         "joint_velocity_range": (0.0, 0.0),
-    #     },
-    # )
-    
     reset_base = EventTerm(
-        func=mdp.reset_to_pose_json,
+        func=mdp.reset_from_pose_array_with_curriculum,
         mode="reset",
         params={
-            "json_path": "assets/default-pose.json",
-            # Root pose noise (position in meters, angles in radians)
+            "json_path": "assets/sorted-poses-rc3.json",
+            
+            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+            "frame_range": (4500,5796),  # Start with last pose only - curriculum will expand backward
+            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+            "home_frame_prob": 0.1,       # 30% always sample crawling pose
+            
+            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+            "end_home_frame": 5796,          # Pose 0 (standing) is the end anchor
+            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+            # Curriculum will increase this to ~0.1 in final stages
+
+            # Small random offsets on root pose at reset (position in meters, angles in radians)
             "pose_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
+                "x": (-0.05, 0.05),
+                "y": (-0.05, 0.05),
+                "z": (-0.05, 0.05),
+                "roll": (-0.050, 0.050),
+                "pitch": (-0.050, 0.050),
                 "yaw": (-3.14, 3.14),
             },
+            # Small random root velocity at reset (linear m/s, angular rad/s)
             "velocity_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "z": (-0.1, 0.1),
-                "roll": (-0.1, 0.1),
-                "pitch": (-0.1, 0.1),
-                "yaw": (-0.1, 0.1)
+                "x":  (-0.05, 0.05),
+                "y":  (-0.05, 0.05),
+                "z": (-0.05, 0.05),
+                "roll":  (-0.05, 0.05),
+                "pitch": (-0.05, 0.05),
+                "yaw": (-0.05, 0.05),
             },
-
-            "position_range": (0.9, 1.1),
-            # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
+            "position_range": (0.95, 1.05),
             "joint_velocity_range": (0.0, 0.0),
         },
     )
+    
+    # reset_base = EventTerm(
+    #     func=mdp.reset_to_pose_json,
+    #     mode="reset",
+    #     params={
+    #         "json_path": "assets/default-pose.json",
+    #         # Root pose noise (position in meters, angles in radians)
+    #         "pose_range": {
+    #             "x": (-0.1, 0.1),
+    #             "y": (-0.1, 0.1),
+    #             "yaw": (-3.14, 3.14),
+    #         },
+    #         "velocity_range": {
+    #             "x": (-0.1, 0.1),
+    #             "y": (-0.1, 0.1),
+    #             "z": (-0.1, 0.1),
+    #             "roll": (-0.1, 0.1),
+    #             "pitch": (-0.1, 0.1),
+    #             "yaw": (-0.1, 0.1)
+    #         },
+
+    #         "position_range": (0.9, 1.1),
+    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
+    #         "joint_velocity_range": (0.0, 0.0),
+    #     },
+    # )
 
     # CRAWL2STAND configuration (reverse through sorted poses) - EXAMPLE
     # Uncomment and use this for crawl2stand training:
@@ -433,6 +433,16 @@ class RewardsCfg:
     #orientation
     flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=1.0)
     
+    # Encourage forward weight shift (COM ahead of feet) to prevent backward falls during transitions
+    # Uses actual center of mass (root_com_pos_w) for accurate physics
+    com_forward_lean = RewTerm(
+        func=mdp.com_forward_of_feet,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "feet_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+        },
+    )
 
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
@@ -453,11 +463,11 @@ class RewardsCfg:
         },
     )
 
-    no_jumps = RewTerm(
-        func=mdp.desired_contacts,
-        weight=-3.,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*ankle_roll_link"])},
-    )
+    # no_jumps = RewTerm(
+    #     func=mdp.desired_contacts,
+    #     weight=-3.,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*ankle_roll_link"])},
+    # )
         
     # body_lin_acc_l2
     # joint_acc_l2
@@ -484,18 +494,35 @@ class RewardsCfg:
     #     params={"asset_cfg": SceneEntityCfg("robot")},
     # )
 
-    #pseudo termination
-    bellyhead_drag_penalty = RewTerm(
-        func=mdp.undesired_contacts,
-        weight=-10.0,
+    both_feet_air = RewTerm(
+        func=mdp.both_feet_air,
+        weight=-1.,
         params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names= "torso_link",
-            ),
-            "threshold": 1.0,  # in Newtons (normal force magnitude)
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
+    
+
+    both_hand_air = RewTerm(
+        func=mdp.both_feet_air,
+        weight=-1.,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wrist_link"),
+        },
+    )
+
+    #pseudo termination
+    # bellyhead_drag_penalty = RewTerm(
+    #     func=mdp.undesired_contacts,
+    #     weight=-10.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names= "torso_link",
+    #         ),
+    #         "threshold": 1.0,  # in Newtons (normal force magnitude)
+    #     },
+    # )
 
     undesired_body_contact_penalty = RewTerm(
         func=mdp.undesired_contacts,
@@ -503,7 +530,7 @@ class RewardsCfg:
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names="^(?!.*ankle_roll_link|.*wrist_link|torso_link).*",
+                body_names="^(?!.*ankle_roll_link|.*wrist_link).*",
             ),
             "threshold": 1.0,  # in Newtons (normal force magnitude)
         },

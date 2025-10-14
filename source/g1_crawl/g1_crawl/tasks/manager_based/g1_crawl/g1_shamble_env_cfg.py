@@ -98,7 +98,7 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0., 1.), lin_vel_y=(0.0, 0.0), ang_vel_z=(-0.5,0.5), heading=(-3.14, 3.14)
+            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-3.14, 3.14)
         ),
     )
 
@@ -265,70 +265,70 @@ class EventCfg:
 
     # reset
     # Reset robot to pose from JSON with optional noise/scaling for both root and joints
-    # reset_robot = EventTerm(
-    #     func=mdp.reset_to_pose_json,
-    #     mode="reset",
-    #     params={
-    #         "json_path": DEFAULT_POSE_PATH,
-    #         # Root pose noise (position in meters, angles in radians)
-    #         "pose_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "yaw": (-3.14, 3.14),
-    #         },
-    #         "velocity_range": {
-    #             "x": (0.0, 0.0),
-    #             "y": (0.0, 0.0),
-    #             "z": (0.0, 0.0),
-    #             "roll": (0.0, 0.0),
-    #             "pitch": (0.0, 0.0),
-    #             "yaw": (0.0, 0.0),
-    #         },
-
-    #         "position_range": (0.9, 1.1),
-    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-    #         "joint_velocity_range": (0.0, 0.0),
-    #     },
-    # )
-
     reset_robot = EventTerm(
-        func=mdp.reset_from_pose_array_with_curriculum,
+        func=mdp.reset_to_pose_json,
         mode="reset",
         params={
-            "json_path": "assets/sorted-poses-rc3.json",
-            
-            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
-            "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
-            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
-            "home_frame_prob": 0.3,       # 30% always sample crawling pose
-            
-            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
-            "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
-            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
-            # Curriculum will increase this to ~0.1 in final stages
-
-            # Small random offsets on root pose at reset (position in meters, angles in radians)
+            "json_path": DEFAULT_POSE_PATH,
+            # Root pose noise (position in meters, angles in radians)
             "pose_range": {
                 "x": (-0.1, 0.1),
                 "y": (-0.1, 0.1),
-                "z": (-0.05, 0.05),
-                "roll": (-0.10, 0.10),
-                "pitch": (-0.10, 0.10),
                 "yaw": (-3.14, 3.14),
             },
-            # Small random root velocity at reset (linear m/s, angular rad/s)
             "velocity_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "z":(-0.1, 0.1),
-                "roll": (-0.1, 0.1),
-                "pitch":(-0.1, 0.1),
-                "yaw":(-0.1, 0.1)
+                "x": (0.0, 0.0),
+                "y": (0.0, 0.0),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (0.0, 0.0),
             },
+
             "position_range": (0.9, 1.1),
+            # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
             "joint_velocity_range": (0.0, 0.0),
         },
     )
+
+    # reset_robot = EventTerm(
+    #     func=mdp.reset_from_pose_array_with_curriculum,
+    #     mode="reset",
+    #     params={
+    #         "json_path": "assets/sorted-poses-rc3.json",
+            
+    #         # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+    #         "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
+    #         "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+    #         "home_frame_prob": 0.3,       # 30% always sample crawling pose
+            
+    #         # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
+    #         "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+    #         # Curriculum will increase this to ~0.1 in final stages
+
+    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
+    #         "pose_range": {
+    #             "x": (-0.1, 0.1),
+    #             "y": (-0.1, 0.1),
+    #             "z": (-0.05, 0.05),
+    #             "roll": (-0.10, 0.10),
+    #             "pitch": (-0.10, 0.10),
+    #             "yaw": (-3.14, 3.14),
+    #         },
+    #         # Small random root velocity at reset (linear m/s, angular rad/s)
+    #         "velocity_range": {
+    #             "x": (-0.1, 0.1),
+    #             "y": (-0.1, 0.1),
+    #             "z":(-0.1, 0.1),
+    #             "roll": (-0.1, 0.1),
+    #             "pitch":(-0.1, 0.1),
+    #             "yaw":(-0.1, 0.1)
+    #         },
+    #         "position_range": (0.9, 1.1),
+    #         "joint_velocity_range": (0.0, 0.0),
+    #     },
+    # )
 
     # reset_robot = EventTerm(
     #     func=mdp.reset_to_pose_json,
@@ -515,7 +515,13 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names="^(?!.*_ankle_roll_link).*$"
+            ),
+            "threshold": 1.0,
+        },
     )
 
 # @configclass
@@ -574,7 +580,7 @@ class G1ShambleEnvCfg(ManagerBasedRLEnvCfg):
         # Set terrain to plane and disable height scanning
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
-        self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
 
         # self.scene.height_scanner = None
 

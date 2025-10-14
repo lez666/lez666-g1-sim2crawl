@@ -1305,3 +1305,101 @@ def base_height_l2_command_based(
     # Compute L2 squared error
     height_error = body_pos_w - target_height
     return torch.sum(torch.square(height_error), dim=1)
+
+
+def com_forward_of_feet(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+) -> torch.Tensor:
+    """Reward when the center of mass is positioned forward relative to the feet on the ground plane.
+    
+    This encourages the robot to lean forward during standing-to-crawling transitions.
+    Without forward weight shift, the robot will fall backward.
+    
+    Uses a gravity-aligned yaw frame to project everything onto the ground plane.
+    This makes the reward work correctly in both standing (upright) and crawling (pitched forward) poses.
+    
+    The reward is computed as:
+    reward = com_x_yaw - mean_feet_x_yaw
+    
+    where positions are in a gravity-aligned coordinate frame (yaw rotation only, no pitch/roll).
+    
+    Positive values indicate the COM is forward of the feet on the ground plane (stable).
+    Negative values indicate the COM is behind the feet (will fall backward).
+    
+    Args:
+        env: Environment instance
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with forward offset in meters (ground plane projection)
+    """
+    from isaaclab.utils.math import yaw_quat
+    
+    asset: Articulation = env.scene[asset_cfg.name]
+    
+    # Get gravity-aligned yaw frame (removes pitch and roll, keeps only yaw)
+    # This gives us the robot's heading direction projected onto the ground plane
+    yaw_only_quat = yaw_quat(asset.data.root_link_quat_w)  # [N, 4]
+    
+    # Transform COM to gravity-aligned yaw frame
+    com_pos_w = asset.data.root_com_pos_w  # [N, 3]
+    com_yaw_frame = quat_apply_inverse(yaw_only_quat, com_pos_w)  # [N, 3]
+    com_x_yaw = com_yaw_frame[:, 0]  # [N] - X component in yaw frame (forward on ground)
+    
+    # Transform feet to gravity-aligned yaw frame
+    feet_pos_w = asset.data.body_pos_w[:, feet_cfg.body_ids, :]  # [N, num_feet, 3]
+    
+    # Transform each foot position to yaw frame
+    N, num_feet, _ = feet_pos_w.shape
+    feet_pos_w_flat = feet_pos_w.reshape(N * num_feet, 3)  # [N*num_feet, 3]
+    yaw_quat_expanded = yaw_only_quat.unsqueeze(1).expand(-1, num_feet, -1).reshape(N * num_feet, 4)
+    feet_yaw_frame_flat = quat_apply_inverse(yaw_quat_expanded, feet_pos_w_flat)  # [N*num_feet, 3]
+    feet_yaw_frame = feet_yaw_frame_flat.reshape(N, num_feet, 3)  # [N, num_feet, 3]
+    
+    feet_x_yaw_mean = feet_yaw_frame[:, :, 0].mean(dim=1)  # [N] - average X in yaw frame
+    
+    # Reward = how far forward the COM is relative to feet on the ground plane
+    # Positive values mean COM is ahead of feet (stable, leaning forward)
+    forward_offset = com_x_yaw - feet_x_yaw_mean
+    
+    return forward_offset
+
+
+def com_forward_of_feet_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    target_offset: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+) -> torch.Tensor:
+    """Exponential bonus for having the center of mass at a target forward offset relative to feet.
+    
+    This encourages the robot to maintain a specific forward lean, important for stable
+    crawling transitions. Uses an exponential kernel centered at target_offset.
+    
+    Uses the actual center of mass position (root_com_pos_w) rather than a proxy body link.
+    
+    reward = exp(- (offset - target)^2 / std^2)
+    
+    Args:
+        env: Environment instance
+        std: Standard deviation controlling reward falloff (smaller = sharper)
+        target_offset: Target forward offset in meters (positive = forward)
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with exponential bonus in [0, 1]
+    """
+    if float(std) <= 0.0:
+        raise RuntimeError("com_forward_of_feet_exp requires std > 0")
+    
+    # Get current forward offset using actual COM
+    forward_offset = com_forward_of_feet(env, asset_cfg, feet_cfg)
+    
+    # Exponential bonus around target
+    error_sq = torch.square(forward_offset - float(target_offset))
+    return torch.exp(-error_sq / (float(std) ** 2))
