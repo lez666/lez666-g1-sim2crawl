@@ -265,70 +265,70 @@ class EventCfg:
 
     # reset
     # Reset robot to pose from JSON with optional noise/scaling for both root and joints
-    reset_robot = EventTerm(
-        func=mdp.reset_to_pose_json,
-        mode="reset",
-        params={
-            "json_path": DEFAULT_POSE_PATH,
-            # Root pose noise (position in meters, angles in radians)
-            "pose_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "yaw": (-3.14, 3.14),
-            },
-            "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
-            },
-
-            "position_range": (0.9, 1.1),
-            # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-            "joint_velocity_range": (0.0, 0.0),
-        },
-    )
-
     # reset_robot = EventTerm(
-    #     func=mdp.reset_from_pose_array_with_curriculum,
+    #     func=mdp.reset_to_pose_json,
     #     mode="reset",
     #     params={
-    #         "json_path": "assets/sorted-poses-rc3.json",
-            
-    #         # Curriculum parameters: start with crawling, expand BACKWARD to include standing
-    #         "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
-    #         "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
-    #         "home_frame_prob": 0.3,       # 30% always sample crawling pose
-            
-    #         # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
-    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
-    #         "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
-    #         # Curriculum will increase this to ~0.1 in final stages
-
-    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
+    #         "json_path": DEFAULT_POSE_PATH,
+    #         # Root pose noise (position in meters, angles in radians)
     #         "pose_range": {
     #             "x": (-0.1, 0.1),
     #             "y": (-0.1, 0.1),
-    #             "z": (-0.05, 0.05),
-    #             "roll": (-0.10, 0.10),
-    #             "pitch": (-0.10, 0.10),
     #             "yaw": (-3.14, 3.14),
     #         },
-    #         # Small random root velocity at reset (linear m/s, angular rad/s)
     #         "velocity_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "z":(-0.1, 0.1),
-    #             "roll": (-0.1, 0.1),
-    #             "pitch":(-0.1, 0.1),
-    #             "yaw":(-0.1, 0.1)
+    #             "x": (0.0, 0.0),
+    #             "y": (0.0, 0.0),
+    #             "z": (0.0, 0.0),
+    #             "roll": (0.0, 0.0),
+    #             "pitch": (0.0, 0.0),
+    #             "yaw": (0.0, 0.0),
     #         },
+
     #         "position_range": (0.9, 1.1),
+    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
     #         "joint_velocity_range": (0.0, 0.0),
     #     },
     # )
+
+    reset_robot = EventTerm(
+        func=mdp.reset_from_pose_array_with_curriculum,
+        mode="reset",
+        params={
+            "json_path": "assets/sorted-poses-rc3.json",
+            
+            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+            "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
+            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+            "home_frame_prob": 0.1,       # 30% always sample crawling pose
+            
+            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+            "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
+            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+            # Curriculum will increase this to ~0.1 in final stages
+
+            # Small random offsets on root pose at reset (position in meters, angles in radians)
+            "pose_range": {
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.05, 0.05),
+                "roll": (-0.10, 0.10),
+                "pitch": (-0.10, 0.10),
+                "yaw": (-3.14, 3.14),
+            },
+            # Small random root velocity at reset (linear m/s, angular rad/s)
+            "velocity_range": {
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z":(-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch":(-0.1, 0.1),
+                "yaw":(-0.1, 0.1)
+            },
+            "position_range": (0.9, 1.1),
+            "joint_velocity_range": (0.0, 0.0),
+        },
+    )
 
     # reset_robot = EventTerm(
     #     func=mdp.reset_to_pose_json,
@@ -370,29 +370,21 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.2)
-    # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
-    dof_torques_l2 = RewTerm(
-        func=mdp.joint_torques_l2,
-        weight=-1.0e-4,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            )
-        },
+    
+
+    # COMMAND
+
+    track_lin_vel_xy_exp = RewTerm(
+        func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
+        weight=1.0,
+        params={"command_name": "base_velocity", "std": 0.5},
     )
-    dof_acc_l2 = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-1.0e-7,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            )
-        },
+    track_ang_vel_z_exp = RewTerm(
+        func=mdp.track_ang_vel_z_world_exp, weight=1.0, params={"command_name": "base_velocity", "std": 0.5}
     )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+
+    # POSE
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
 
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
@@ -403,77 +395,9 @@ class RewardsCfg:
         },
     )
 
-    # both_feet_on_ground_stationary = RewTerm(
-    #     func=mdp.both_feet_on_ground_when_stationary,
-    #     weight=-.1,
-    #     params={
-    #         "command_name": "base_velocity",
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-    #         "threshold": 0.1,
-    #     },
-    # )
-
-    # undesired_contacts = None
-
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
-    track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
-        weight=1.0,
-        params={"command_name": "base_velocity", "std": 0.5},
-    )
-    track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=1.0, params={"command_name": "base_velocity", "std": 0.5}
-    )
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=3.,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.2,
-        },
-    )
-
-    both_feet_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-0.5,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-        },
-    )
-
-    feet_slide = RewTerm(
-        func=mdp.feet_slide,
-        weight=-0.1,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-        },
-    )
-
-    # Penalize ankle joint limits
-    # dof_pos_limits = RewTerm(
-    #     func=mdp.joint_pos_limits,
-    #     weight=-1.0,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"])},
-    # )
-    dof_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits,
-        weight=-5.0,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-    torque_limits = RewTerm(
-        func=mdp.applied_torque_limits,
-        weight=-5.0,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-    
-    # Penalize deviation from target pose for non-essential locomotion joints
     pose_deviation_hip = RewTerm(
         func=mdp.pose_json_deviation_l1,
-        weight=-0.1,
+        weight=-0.3,
         params={
             "pose_path": DEFAULT_POSE_PATH,
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
@@ -508,6 +432,93 @@ class RewardsCfg:
     )
 
 
+
+
+    # SAFETY / REGULATORIZATION
+    dof_pos_limits = RewTerm(
+        func=mdp.joint_pos_limits,
+        weight=-5.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    torque_limits = RewTerm(
+        func=mdp.applied_torque_limits,
+        weight=-5.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+    dof_torques_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-1.0e-4,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            )
+        },
+    )
+    dof_acc_l2 = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-1.0e-7,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            )
+        },
+    )
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+
+    # WALK QUALITY
+
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=3.,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 0.2,
+        },
+    )
+
+    # both_feet_air = RewTerm(
+    #     func=mdp.both_feet_air,
+    #     weight=-0.5,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
+
+    # feet_slide = RewTerm(
+    #     func=mdp.feet_slide,
+    #     weight=-0.1,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
+
+    # Penalize ankle joint limits
+    # dof_pos_limits = RewTerm(
+    #     func=mdp.joint_pos_limits,
+    #     weight=-1.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"])},
+    # )
+
+
+    both_feet_on_ground_stationary = RewTerm(
+        func=mdp.both_feet_on_ground_when_stationary,
+        weight=-.1,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 0.1,
+        },
+    )
+
+   
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+  
+
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
@@ -518,7 +529,7 @@ class TerminationsCfg:
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names="^(?!.*_ankle_roll_link).*$"
+                body_names="^(?!.*ankle_roll_link).*",
             ),
             "threshold": 1.0,
         },
