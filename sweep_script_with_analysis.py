@@ -12,8 +12,8 @@ import nanoid as nano
 OMIT_PARAM = "__OMIT__"
 
 # Experiment configuration
-TASK_NAME = "g1-shamble"
-EXPERIMENT_NAME = "g1-shamble-sweep_v24"  
+TASK_NAME = "g1-shamble-start"
+EXPERIMENT_NAME = "g1-shamble-start-sweep_v3"  
 START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from a specific run
 
 # =============================================================================
@@ -28,8 +28,12 @@ START_FROM_RUN = 1  # Set to 1 to start from beginning, or higher to resume from
 SWEEP_CONFIG = {
     # Parameters to sweep - each should be a list of values to test
     "SWEEP_PARAMS": {
-        "env.rewards.both_feet_on_ground_stationary.weight": [-.1,0.],
-        # "env.rewards.pose_deviation_all.weight": [-0.3,-0.1],
+        "env.rewards.com_centered_over_feet.weight": [0.0,0.3],
+        # "env.rewards.pose_deviation_all.weight": [-1.0,-0.3,-0.1],
+        # "env.rewards.pose_deviation_all.params.pose_path": ["assets/default-pose.json", "assets/stand-pose-rc2.json"],
+
+
+        
         # "env.rewards.pose_deviation_hip.weight": [-3.0, -1.0, -0.3],
         # "env.rewards.base_height_l2.weight": [-3.0, -1.0, -0.1]
 

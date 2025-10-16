@@ -1,0 +1,5 @@
+# Minimal dependencies for standalone G1 crawl deployment
+mujoco>=3.0.0
+torch>=2.0.0
+numpy>=1.24.0
+glfw>=2.0.0
