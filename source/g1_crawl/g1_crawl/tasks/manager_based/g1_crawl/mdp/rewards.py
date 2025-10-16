@@ -12,6 +12,8 @@ specify the reward function and its parameters.
 from __future__ import annotations
 
 import torch
+import json
+import os
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import  RigidObject
@@ -19,7 +21,7 @@ from isaaclab.assets import Articulation
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_apply
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -28,6 +30,60 @@ if TYPE_CHECKING:
 from ..g1 import get_animation, build_joint_index_map
 from .observations import compute_animation_phase_and_frame
 
+def both_feet_on_ground(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward when both feet are in contact with the ground.
+
+    This function rewards the agent when both feet are in contact with the ground, 
+    encouraging stable bipedal stance. Use with feet_slide penalty to discourage sliding.
+    
+    Args:
+        env: The environment instance.
+        sensor_cfg: Configuration for the contact sensor.
+
+    Returns:
+        1 if both feet are in contact, 0 otherwise.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # Check if feet are in contact using contact time
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    # Count feet in contact
+    both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
+    return both_feet_in_contact.float()
+
+
+def both_feet_on_ground_when_stationary(
+    env, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float = 0.1
+) -> torch.Tensor:
+    """Penalize when both feet are NOT in contact with the ground during stationary commands.
+
+    This function penalizes the agent when both feet are not in contact with the ground
+    during stationary commands (velocity near zero). This encourages stable bipedal 
+    stance when not moving.
+    
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command to check.
+        sensor_cfg: Configuration for the contact sensor.
+        threshold: Velocity command threshold below which penalty applies (default: 0.1).
+
+    Returns:
+        1 if both feet are NOT in contact and commands are near zero, 0 otherwise.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # Check if feet are in contact using contact time
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    # Count feet in contact
+    both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
+    # Invert: penalty when feet are NOT both on ground
+    penalty = 1.0 - both_feet_in_contact.float()
+    # Only apply penalty when velocity commands are near zero (stationary)
+    cmd = env.command_manager.get_command(command_name)
+    # Check both linear (xy) and angular (z) velocity commands
+    cmd_magnitude = torch.sqrt(cmd[:, 0]**2 + cmd[:, 1]**2 + cmd[:, 2]**2)
+    is_stationary = cmd_magnitude < threshold
+    return penalty * is_stationary.float()
 
 def feet_air_time(
     env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
@@ -75,6 +131,266 @@ def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scene
     # compute out of limits constraints
     angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
     return torch.sum(torch.abs(angle), dim=1)
+
+
+def joint_proximity_bonus_exp(
+    env: ManagerBasedRLEnv, 
+    std: float, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Exponential bonus reward for being close to default joint positions.
+    
+    reward = exp(-sum(|joint_pos - default_pos|^2) / std^2)
+    
+    Args:
+        env: RL environment.
+        std: Standard deviation parameter controlling reward falloff (smaller = sharper falloff).
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with proximity bonuses in [0, 1].
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    
+    # Compute joint position deviations
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviations = joint_pos - default_pos
+    
+    # Compute squared L2 norm of deviations
+    err_sq = torch.sum(torch.square(deviations), dim=1)
+    
+    # Exponential bonus: exp(-err_sq / std^2)
+    # When err_sq = 0 (perfect match): reward = 1.0
+    # As err_sq increases: reward approaches 0
+    reward = torch.exp(-err_sq / (std ** 2))
+    
+    return reward
+
+
+# Global cache for pose data to avoid repeated file loading
+_pose_cache = {}
+_pose_full_cache = {}
+
+def clear_pose_cache():
+    """Clear the pose data cache. Useful for testing or when pose files change."""
+    global _pose_cache
+    _pose_cache.clear()
+    _pose_full_cache.clear()
+
+def _load_pose_from_json(json_path: str) -> dict:
+    """Load joint pose data from JSON file with caching.
+    
+    Args:
+        json_path: Path to the JSON file containing pose data.
+        
+    Returns:
+        Dictionary containing joint positions.
+    """
+    # Check cache first
+    if json_path in _pose_cache:
+        return _pose_cache[json_path]
+    
+    # Get the project root directory (assuming this is called from the project root)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../.."))
+    full_path = os.path.join(project_root, json_path)
+    
+    with open(full_path, 'r') as f:
+        data = json.load(f)
+    
+    # Extract the first pose from the poses array
+    if "poses" in data and len(data["poses"]) > 0:
+        pose_data = data["poses"][0]["joints"]
+        # Cache the result
+        _pose_cache[json_path] = pose_data
+        return pose_data
+    else:
+        raise ValueError(f"No poses found in {json_path}")
+
+
+def _build_target_vector_from_pose_dict(asset: Articulation, pose: dict) -> torch.Tensor:
+    """Build a target joint position vector in the exact order of asset.joint_names.
+
+    Fails loudly if any joint name is missing in the provided pose dict.
+    """
+    names = asset.joint_names
+    missing = [n for n in names if n not in pose]
+    if len(missing) > 0:
+        raise KeyError(f"Pose dict missing joint keys: {missing[:8]}{'...' if len(missing) > 8 else ''}")
+    values = [pose[n] for n in names]
+    return torch.tensor(values, dtype=asset.data.joint_pos.dtype, device=asset.data.joint_pos.device)
+
+
+def _get_full_target_vector(json_path: str, asset: Articulation) -> torch.Tensor:
+    """Return a cached full-length target vector for the given pose json and asset.
+
+    Keyed by (json_path, joint_names tuple, dtype, device). Fails loudly if pose is missing joints.
+    """
+    key = (
+        json_path,
+        tuple(asset.joint_names),
+        str(asset.data.joint_pos.dtype),
+        str(asset.data.joint_pos.device),
+    )
+    if key in _pose_full_cache:
+        return _pose_full_cache[key]
+
+    pose_dict = _load_pose_from_json(json_path)
+    vec = _build_target_vector_from_pose_dict(asset, pose_dict)
+    _pose_full_cache[key] = vec
+    return vec
+
+
+def command_based_pose_proximity_bonus_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    command_0_pose_path: str = "assets/crawl-pose.json",
+    command_1_pose_path: str = "assets/stand-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Exponential bonus reward for being close to command-based goal joint positions.
+    
+    When command is 0: uses command_0_pose_path as target
+    When command is 1: uses command_1_pose_path as target
+    
+    Note: Pose data is cached after first load to avoid repeated file I/O.
+    
+    Args:
+        env: RL environment.
+        command_name: Name of the boolean command to use for pose selection.
+        std: Standard deviation parameter controlling reward falloff.
+        command_0_pose_path: Path to pose JSON file for command=0.
+        command_1_pose_path: Path to pose JSON file for command=1.
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with proximity bonuses in [0, 1].
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Command mask (num_envs,)
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+
+    # Validate std
+    std_val = float(std)
+    if std_val <= 0.0:
+        raise RuntimeError("command_based_pose_proximity_bonus_exp requires std > 0")
+
+    # Load and build full target vectors in joint order
+    pose_0_full = _get_full_target_vector(command_0_pose_path, asset)
+    pose_1_full = _get_full_target_vector(command_1_pose_path, asset)
+
+    num_envs = asset.data.joint_pos.shape[0]
+    # Build per-env full target matrix based on command (broadcast where)
+    mask = (command_values > 0.5).view(num_envs, 1)
+    target_full = torch.where(
+        mask,
+        pose_1_full.view(1, -1).expand(num_envs, -1),
+        pose_0_full.view(1, -1).expand(num_envs, -1),
+    )
+
+    # Select only configured joints
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_sel = target_full[:, asset_cfg.joint_ids]
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in command_based_pose_proximity_bonus_exp")
+
+    deviations = joint_pos_sel - target_sel
+    err_sq = torch.sum(torch.square(deviations), dim=1)
+    reward = torch.exp(-err_sq / (std_val ** 2))
+    return reward
+
+
+def command_based_joint_deviation_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_0_pose_path: str = "assets/crawl-pose.json",
+    command_1_pose_path: str = "assets/stand-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """L1 penalty for joint positions that deviate from command-based target poses.
+    
+    When command is 0: uses command_0_pose_path as target
+    When command is 1: uses command_1_pose_path as target
+    
+    Note: Pose data is cached after first load to avoid repeated file I/O.
+    
+    Args:
+        env: RL environment.
+        command_name: Name of the boolean command to use for pose selection.
+        command_0_pose_path: Path to pose JSON file for command=0.
+        command_1_pose_path: Path to pose JSON file for command=1.
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with L1 deviation penalties.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Command mask (num_envs,)
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+
+    # Load and build full target vectors in joint order
+    pose_0_full = _get_full_target_vector(command_0_pose_path, asset)
+    pose_1_full = _get_full_target_vector(command_1_pose_path, asset)
+
+    num_envs = asset.data.joint_pos.shape[0]
+    mask = (command_values > 0.5).view(num_envs, 1)
+    target_full = torch.where(
+        mask,
+        pose_1_full.view(1, -1).expand(num_envs, -1),
+        pose_0_full.view(1, -1).expand(num_envs, -1),
+    )
+
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_sel = target_full[:, asset_cfg.joint_ids]
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in command_based_joint_deviation_l1")
+
+    deviations = torch.abs(joint_pos_sel - target_sel)
+    total_deviation = torch.sum(deviations, dim=1)
+    return total_deviation
+
+
+def pose_json_deviation_l1(
+    env: ManagerBasedRLEnv,
+    pose_path: str = "assets/default-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """L1 penalty for joint positions that deviate from a target pose defined in a JSON file.
+    
+    Simple single-pose version without command logic.
+    Note: Pose data is cached after first load to avoid repeated file I/O.
+    
+    Args:
+        env: RL environment.
+        pose_path: Path to pose JSON file.
+        asset_cfg: Scene entity for the robot asset.
+    
+    Returns:
+        Tensor of shape (num_envs,) with L1 deviation penalties.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Load and build full target vector in joint order
+    target_full = _get_full_target_vector(pose_path, asset)
+
+    # Select the joints specified in asset_cfg
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_sel = target_full[asset_cfg.joint_ids]
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in pose_json_deviation_l1")
+
+    # Compute L1 deviation
+    deviations = torch.abs(joint_pos_sel - target_sel)
+    total_deviation = torch.sum(deviations, dim=1)
+    return total_deviation
 
 def animation_pose_similarity_l1(
     env: ManagerBasedRLEnv,
@@ -331,6 +647,20 @@ def track_lin_vel_yz_base_exp(
 #     )
 #     return torch.exp(-ang_vel_error / (std ** 2))
 
+
+def track_lin_vel_xy_yaw_frame_exp_shamble(
+    env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward tracking of linear velocity commands (xy axes) in the gravity aligned robot frame using exponential kernel."""
+    # extract the used quantities (to enable type-hinting)
+    asset = env.scene[asset_cfg.name]
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
+    lin_vel_error = torch.sum(
+        torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
+    )
+    return torch.exp(-lin_vel_error / std**2)
+
+
 def track_ang_vel_z_world_exp(
     env, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -438,6 +768,198 @@ def align_projected_gravity_plus_x_l2(
     target = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
     dist_sq = torch.sum(torch.square(g_b - target), dim=1)
     return 1.0 - 0.5 * dist_sq
+
+
+def flat_orientation_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize non-flat base orientation using L2 squared kernel.
+
+    This is computed by penalizing the xy-components of the projected gravity vector.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+
+def flat_orientation_bonus_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exponential bonus for flat base orientation using projected gravity xy.
+
+    reward = exp(- ||g_b.xy||^2 / std^2), bounded in (0, 1].
+
+    Args:
+        env: RL environment.
+        std: Standard deviation controlling falloff (must be > 0).
+        asset_cfg: Scene entity for the robot asset.
+
+    Returns:
+        Tensor of shape (num_envs,) with bonuses in [0, 1].
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_xy = asset.data.projected_gravity_b[:, :2]
+    std_val = float(std)
+    if std_val <= 0.0:
+        raise RuntimeError("flat_orientation_bonus_exp requires std > 0")
+    dist_sq = torch.sum(torch.square(g_xy), dim=1)
+    return torch.exp(-dist_sq / (std_val ** 2))
+
+
+def flat_orientation_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward-style mapping for flat orientation.
+
+    Converts the flat-orientation penalty into a bounded reward similar to
+    :func:`align_projected_gravity_plus_x_l2` by mapping
+    reward = 1 - 0.5 * || g_b.xy ||^2.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_xy = asset.data.projected_gravity_b[:, :2]
+    dist_sq = torch.sum(torch.square(g_xy), dim=1)
+    return 1.0 - 0.5 * dist_sq
+
+
+def command_based_orientation_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    scale_crawl: float = 1.0,
+    scale_stand: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Command-based orientation reward with consistent positive semantics.
+
+    - If command == 0 (crawl): use align_projected_gravity_plus_x_l2 (reward style in [-1, 1]).
+    - If command == 1 (stand): use flat_orientation_reward (reward style similar bounds).
+
+    The output is a reward-like value that can be scaled by the outer RewTerm ``weight``.
+    Optional ``scale_crawl``/``scale_stand`` let you rebalance branches without changing sign.
+    """
+    # Command mask (num_envs,)
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+
+    crawl_term = align_projected_gravity_plus_x_l2(env, asset_cfg=asset_cfg)
+    stand_term = flat_orientation_reward(env, asset_cfg=asset_cfg)
+
+    mask = (command_values > 0.5)
+    # Select weighted terms per env
+    out = torch.where(mask, scale_stand * stand_term, scale_crawl * crawl_term)
+    return out
+
+
+def command_based_orientation_l2_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Command-aware L2 penalty for orientation.
+
+    - Crawl (command==0): penalty = || g_b - [1,0,0] ||^2
+    - Stand (command==1): penalty = || g_b.xy ||^2
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (N, 3)
+
+    target_crawl = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    dist_sq_crawl = torch.sum(torch.square(g_b - target_crawl), dim=1)
+
+    g_xy = g_b[:, :2]
+    dist_sq_stand = torch.sum(torch.square(g_xy), dim=1)
+
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+    mask = (command_values > 0.5)
+    return torch.where(mask, dist_sq_stand, dist_sq_crawl)
+
+
+def command_based_orientation_bonus_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std_crawl: float,
+    std_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exponential bonus close to command-specific orientation target.
+
+    Thin wrapper around :func:`command_based_orientation_proximity_exp` for naming consistency.
+    """
+    return command_based_orientation_proximity_exp(
+        env,
+        command_name=command_name,
+        std_crawl=std_crawl,
+        std_stand=std_stand,
+        asset_cfg=asset_cfg,
+    )
+
+def command_based_orientation_proximity_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std_crawl: float,
+    std_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Smooth proximity bonus to the command-specific orientation target using an exponential kernel.
+
+    - Crawl (command==0): proximity to +X target in base frame: exp(-||g_b - [1,0,0]||^2 / std_crawl^2)
+    - Stand (command==1): proximity to flat: exp(-||g_b.xy||^2 / std_stand^2)
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (N, 3)
+
+    # Validate stds
+    if float(std_crawl) <= 0.0 or float(std_stand) <= 0.0:
+        raise RuntimeError("command_based_orientation_proximity_exp requires std_crawl>0 and std_stand>0")
+
+    # Compute both branch rewards
+    target_crawl = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    dist_sq_crawl = torch.sum(torch.square(g_b - target_crawl), dim=1)
+    prox_crawl = torch.exp(-dist_sq_crawl / (float(std_crawl) ** 2))
+
+    g_xy = g_b[:, :2]
+    dist_sq_stand = torch.sum(torch.square(g_xy), dim=1)
+    prox_stand = torch.exp(-dist_sq_stand / (float(std_stand) ** 2))
+
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+    mask = (command_values > 0.5)
+    return torch.where(mask, prox_stand, prox_crawl)
+
+
+def command_based_orientation_success_bonus(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    tol_crawl: float,
+    tol_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Sharp success bonus when orientation is within a tolerance of the command target.
+
+    - Crawl (command==0): success if ||g_b - [1,0,0]|| <= tol_crawl
+    - Stand (command==1): success if ||g_b.xy|| <= tol_stand
+    Returns 1.0 on success else 0.0, to be scaled by the RewTerm weight.
+    """
+    if float(tol_crawl) <= 0.0 or float(tol_stand) <= 0.0:
+        raise RuntimeError("command_based_orientation_success_bonus requires tol_crawl>0 and tol_stand>0")
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (N, 3)
+
+    target_crawl = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    err_crawl = torch.linalg.norm(g_b - target_crawl, dim=1)
+    ok_crawl = (err_crawl <= float(tol_crawl)).to(dtype=g_b.dtype)
+
+    err_stand = torch.linalg.norm(g_b[:, :2], dim=1)
+    ok_stand = (err_stand <= float(tol_stand)).to(dtype=g_b.dtype)
+
+    command = env.command_manager.get_command(command_name)
+    command_values = command[:, 0]
+    mask = (command_values > 0.5)
+    return torch.where(mask, ok_stand, ok_crawl)
 
 
 def animation_contact_flags_mismatch_l1(
@@ -560,3 +1082,324 @@ def animation_contact_flags_mismatch_feet_l1(
 
     label_groups = [[0], [1], [2], [3]]
     return animation_contact_flags_mismatch_l1(env, sensor_cfg, label_groups, force_threshold=force_threshold)
+
+def feet_air_time_positive_biped(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward long steps taken by the feet for bipeds.
+
+    This function rewards the agent for taking steps up to a specified threshold and also keep one foot at
+    a time in the air.
+
+    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # compute the reward
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    in_mode_time = torch.where(in_contact, contact_time, air_time)
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1
+    reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
+    reward = torch.clamp(reward, max=threshold)
+    # no reward for zero command
+    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
+    return reward
+
+
+# ============================================
+# Command-conditional locomotion rewards
+# ============================================
+
+def track_lin_vel_xy_yaw_frame_exp_when_standing(
+    env, std: float, command_name: str, boolean_command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward tracking of linear velocity commands only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 to encourage staying in place.
+    
+    Args:
+        env: Environment instance
+        std: Standard deviation for exponential kernel
+        command_name: Name of velocity command
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        Velocity tracking reward when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base reward
+    base_reward = track_lin_vel_xy_yaw_frame_exp_shamble(env, std=std, command_name=command_name, asset_cfg=asset_cfg)
+    
+    # Zero out when crawling
+    return base_reward * standing_mask.float()
+
+
+def track_ang_vel_z_world_exp_when_standing(
+    env, command_name: str, boolean_command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward tracking of angular velocity commands only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 to encourage staying in place.
+    
+    Args:
+        env: Environment instance
+        command_name: Name of velocity command
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        std: Standard deviation for exponential kernel
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        Angular velocity tracking reward when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base reward
+    base_reward = track_ang_vel_z_world_exp(env, command_name=command_name, std=std, asset_cfg=asset_cfg)
+    
+    # Zero out when crawling
+    return base_reward * standing_mask.float()
+
+
+def feet_air_time_positive_biped_when_standing(
+    env, velocity_command_name: str, boolean_command_name: str, threshold: float, sensor_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward long steps/gait quality only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0.
+    
+    Args:
+        env: Environment instance
+        velocity_command_name: Name of velocity command for gating
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        threshold: Air time threshold
+        sensor_cfg: Contact sensor configuration
+    
+    Returns:
+        Feet air time reward when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base reward
+    base_reward = feet_air_time_positive_biped(env, command_name=velocity_command_name, threshold=threshold, sensor_cfg=sensor_cfg)
+    
+    # Zero out when crawling
+    return base_reward * standing_mask.float()
+
+
+def both_feet_air_when_standing(env, boolean_command_name: str, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalize both feet in air only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 (no penalty).
+    
+    Args:
+        env: Environment instance
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        sensor_cfg: Contact sensor configuration
+    
+    Returns:
+        Both feet air penalty when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base penalty
+    base_penalty = both_feet_air(env, sensor_cfg=sensor_cfg)
+    
+    # Zero out when crawling
+    return base_penalty * standing_mask.float()
+
+
+def feet_slide_when_standing(
+    env, boolean_command_name: str, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize feet sliding only when standing (boolean_command==1).
+    
+    When crawling (boolean_command==0), returns 0 (no penalty).
+    
+    Args:
+        env: Environment instance
+        boolean_command_name: Name of boolean command (0=crawl, 1=stand)
+        sensor_cfg: Contact sensor configuration
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        Feet slide penalty when standing, 0 when crawling
+    """
+    # Get boolean command
+    boolean_cmd = env.command_manager.get_command(boolean_command_name)[:, 0]
+    standing_mask = (boolean_cmd > 0.5)
+    
+    # Compute base penalty
+    base_penalty = feet_slide(env, sensor_cfg=sensor_cfg, asset_cfg=asset_cfg)
+    
+    # Zero out when crawling
+    return base_penalty * standing_mask.float()
+
+
+def base_height_l2(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 penalty for base height deviation from a fixed target height.
+    
+    Args:
+        env: Environment instance
+        target_height: Target height (meters)
+        asset_cfg: Robot asset configuration with body_names specified
+    
+    Returns:
+        L2 squared height error penalty
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # Z position
+    height_error = body_pos_w - target_height
+    return torch.sum(torch.square(height_error), dim=1)
+
+
+def base_height_l2_command_based(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_height_crawl: float,
+    target_height_stand: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 penalty for base height deviation from command-based target.
+    
+    When crawling (command==0): target is target_height_crawl
+    When standing (command==1): target is target_height_stand
+    
+    Args:
+        env: Environment instance
+        command_name: Name of boolean command (0=crawl, 1=stand)
+        target_height_crawl: Target height when crawling (meters)
+        target_height_stand: Target height when standing (meters)
+        asset_cfg: Robot asset configuration
+    
+    Returns:
+        L2 squared height error penalty
+    """
+    # Get boolean command
+    command = env.command_manager.get_command(command_name)[:, 0]
+    standing_mask = (command > 0.5)
+    
+    # Get asset and body position
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # Z position
+    
+    # Select target height based on command
+    target_height = torch.where(
+        standing_mask,
+        torch.full_like(body_pos_w, target_height_stand),
+        torch.full_like(body_pos_w, target_height_crawl)
+    )
+    
+    # Compute L2 squared error
+    height_error = body_pos_w - target_height
+    return torch.sum(torch.square(height_error), dim=1)
+
+
+def com_forward_of_feet(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+) -> torch.Tensor:
+    """Reward when the center of mass is positioned forward relative to the feet on the ground plane.
+    
+    This encourages the robot to lean forward during standing-to-crawling transitions.
+    Without forward weight shift, the robot will fall backward.
+    
+    Uses a gravity-aligned yaw frame to project everything onto the ground plane.
+    This makes the reward work correctly in both standing (upright) and crawling (pitched forward) poses.
+    
+    The reward is computed as:
+    reward = com_x_yaw - mean_feet_x_yaw
+    
+    where positions are in a gravity-aligned coordinate frame (yaw rotation only, no pitch/roll).
+    
+    Positive values indicate the COM is forward of the feet on the ground plane (stable).
+    Negative values indicate the COM is behind the feet (will fall backward).
+    
+    Args:
+        env: Environment instance
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with forward offset in meters (ground plane projection)
+    """
+    from isaaclab.utils.math import yaw_quat
+    
+    asset: Articulation = env.scene[asset_cfg.name]
+    
+    # Get gravity-aligned yaw frame (removes pitch and roll, keeps only yaw)
+    # This gives us the robot's heading direction projected onto the ground plane
+    yaw_only_quat = yaw_quat(asset.data.root_link_quat_w)  # [N, 4]
+    
+    # Transform COM to gravity-aligned yaw frame
+    com_pos_w = asset.data.root_com_pos_w  # [N, 3]
+    com_yaw_frame = quat_apply_inverse(yaw_only_quat, com_pos_w)  # [N, 3]
+    com_x_yaw = com_yaw_frame[:, 0]  # [N] - X component in yaw frame (forward on ground)
+    
+    # Transform feet to gravity-aligned yaw frame
+    feet_pos_w = asset.data.body_pos_w[:, feet_cfg.body_ids, :]  # [N, num_feet, 3]
+    
+    # Transform each foot position to yaw frame
+    N, num_feet, _ = feet_pos_w.shape
+    feet_pos_w_flat = feet_pos_w.reshape(N * num_feet, 3)  # [N*num_feet, 3]
+    yaw_quat_expanded = yaw_only_quat.unsqueeze(1).expand(-1, num_feet, -1).reshape(N * num_feet, 4)
+    feet_yaw_frame_flat = quat_apply_inverse(yaw_quat_expanded, feet_pos_w_flat)  # [N*num_feet, 3]
+    feet_yaw_frame = feet_yaw_frame_flat.reshape(N, num_feet, 3)  # [N, num_feet, 3]
+    
+    feet_x_yaw_mean = feet_yaw_frame[:, :, 0].mean(dim=1)  # [N] - average X in yaw frame
+    
+    # Reward = how far forward the COM is relative to feet on the ground plane
+    # Positive values mean COM is ahead of feet (stable, leaning forward)
+    forward_offset = com_x_yaw - feet_x_yaw_mean
+    
+    return forward_offset
+
+
+def com_forward_of_feet_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    target_offset: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+) -> torch.Tensor:
+    """Exponential bonus for having the center of mass at a target forward offset relative to feet.
+    
+    This encourages the robot to maintain a specific forward lean, important for stable
+    crawling transitions. Uses an exponential kernel centered at target_offset.
+    
+    Uses the actual center of mass position (root_com_pos_w) rather than a proxy body link.
+    
+    reward = exp(- (offset - target)^2 / std^2)
+    
+    Args:
+        env: Environment instance
+        std: Standard deviation controlling reward falloff (smaller = sharper)
+        target_offset: Target forward offset in meters (positive = forward)
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with exponential bonus in [0, 1]
+    """
+    if float(std) <= 0.0:
+        raise RuntimeError("com_forward_of_feet_exp requires std > 0")
+    
+    # Get current forward offset using actual COM
+    forward_offset = com_forward_of_feet(env, asset_cfg, feet_cfg)
+    
+    # Exponential bonus around target
+    error_sq = torch.square(forward_offset - float(target_offset))
+    return torch.exp(-error_sq / (float(std) ** 2))

@@ -30,6 +30,7 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
+from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
 import time
 import sys
 import struct
@@ -141,10 +142,31 @@ class Controller:
         joint_limits = np.array(RESTRICTED_JOINT_RANGE, dtype=np.float32)
         self._joint_lower_bounds = joint_limits[:, 0]
         self._joint_upper_bounds = joint_limits[:, 1]
+        
+        # Safety monitoring for neural network control
+        self._prev_qj = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+        self._prev_dqj = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+        self._safety_initialized = False
+        
+        # Safety thresholds
+        self._max_position_jump = 0.3  # rad per timestep (15 rad/s at 20ms)
+        self._max_velocity = 25.0  # rad/s
+        self._max_acceleration = 1500.0  # rad/s^2
+        self._max_action_magnitude = 5.0  # Action output limit
 
         # Static velocity command placeholder; keyboard controls removed
 
         self.control_dt = 0.02
+        
+        # Remote heartbeat tracking
+        self._last_remote_update_time = time.time()
+        self._remote_timeout_seconds = 0.5  # Switch to damped if no update for 0.5s
+        self._remote_connected = True
+        self._last_remote_tick = None
+        
+        # Debug logging
+        self._last_debug_print_time = time.time()
+        self._debug_print_interval = 1.0  # Print debug info every second
 
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()
         self.low_state = unitree_hg_msg_dds__LowState_()
@@ -163,6 +185,11 @@ class Controller:
         # Remote controller state
         self.remote = unitreeRemoteController()
 
+        # Audio client for TTS feedback
+        self.audio_client = AudioClient()
+        self.audio_client.SetTimeout(10.0)
+        self.audio_client.Init()
+
         # wait for the subscriber to receive data
         self.wait_for_low_state()
 
@@ -172,8 +199,11 @@ class Controller:
         # Unified control state
         self.control_mode = "damped"  # one of {"damped", "policy", "hold"}
         self.hold_target_pose = None  # type: np.ndarray | None
-        self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0}
+        self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0, "F1": 0, "Start": 0}
         self._max_forward_speed = 1.5  # Ly -> [0, 1.5]
+        
+        # Safety gate: require Start button press before allowing controls
+        self._system_started = False
 
     def _rising(self, name: str, current: int) -> bool:
         was = self._prev_buttons.get(name, 0)
@@ -197,21 +227,163 @@ class Controller:
         self.hold_target_pose = target_pose.copy()
         self.control_mode = "hold"
 
+    # def print_debug_state(self):
+    #     """Print debug information about low_state periodically."""
+    #     current_time = time.time()
+    #     if current_time - self._last_debug_print_time >= self._debug_print_interval:
+    #         self._last_debug_print_time = current_time
+            
+    #         # Print information about wireless_remote field
+    #         wr = self.low_state.wireless_remote
+    #         wr_len = len(wr) if wr is not None else 0
+    #         wr_bytes = wr[:8] if wr is not None and len(wr) >= 8 else []
+            
+    #         print(f"[DEBUG] tick={self.low_state.tick} | "
+    #               f"wireless_remote: len={wr_len}, first_8_bytes={list(wr_bytes)} | "
+    #               f"Lx={self.remote.Lx:.3f} Ly={self.remote.Ly:.3f} | "
+    #               f"A={self.remote.A} B={self.remote.B} X={self.remote.X} Y={self.remote.Y} | "
+    #               f"remote_connected={self._remote_connected}")
+
+    def check_remote_heartbeat(self):
+        """Check if remote is still connected; switch to damped mode if disconnected."""
+        current_time = time.time()
+        time_since_update = current_time - self._last_remote_update_time
+        
+        if time_since_update > self._remote_timeout_seconds:
+            if self._remote_connected:
+                print("=" * 60)
+                print("WARNING: REMOTE CONTROL DISCONNECTED!")
+                print(f"No heartbeat for {time_since_update:.2f}s (timeout: {self._remote_timeout_seconds}s)")
+                print("Automatically switching to DAMPED mode for safety.")
+                print("=" * 60)
+                self._remote_connected = False
+                # Force damped mode
+                if self.control_mode != "damped":
+                    self.control_mode = "damped"
+                    self.hold_target_pose = None
+            return False
+        return True
+
+    def check_safety_limits(self, pytorch_actions: np.ndarray) -> bool:
+        """
+        Check if current state violates safety limits (position jumps, velocity spikes, etc.)
+        Returns True if safe, False if safety violation detected.
+        """
+        if not self._safety_initialized:
+            # First iteration - just store current state
+            self._prev_qj = self.qj.copy()
+            self._prev_dqj = self.dqj.copy()
+            self._safety_initialized = True
+            return True
+        
+        # Check 1: Position jumps
+        position_delta = np.abs(self.qj - self._prev_qj)
+        max_position_delta = np.max(position_delta)
+        position_jump_joint = np.argmax(position_delta)
+        
+        if max_position_delta > self._max_position_jump:
+            print("=" * 60)
+            print("SAFETY VIOLATION: POSITION JUMP DETECTED!")
+            print(f"Joint {position_jump_joint} jumped {max_position_delta:.3f} rad in one timestep")
+            print(f"(threshold: {self._max_position_jump:.3f} rad)")
+            print(f"Current pos: {self.qj[position_jump_joint]:.3f}, Previous: {self._prev_qj[position_jump_joint]:.3f}")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Check 2: Velocity spikes
+        velocity_magnitude = np.abs(self.dqj)
+        max_velocity = np.max(velocity_magnitude)
+        velocity_spike_joint = np.argmax(velocity_magnitude)
+        
+        if max_velocity > self._max_velocity:
+            print("=" * 60)
+            print("SAFETY VIOLATION: VELOCITY SPIKE DETECTED!")
+            print(f"Joint {velocity_spike_joint} velocity: {self.dqj[velocity_spike_joint]:.3f} rad/s")
+            print(f"(threshold: {self._max_velocity:.3f} rad/s)")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Check 3: Acceleration spikes
+        acceleration = (self.dqj - self._prev_dqj) / self.control_dt
+        max_acceleration = np.max(np.abs(acceleration))
+        acceleration_spike_joint = np.argmax(np.abs(acceleration))
+        
+        if max_acceleration > self._max_acceleration:
+            print("=" * 60)
+            print("SAFETY VIOLATION: ACCELERATION SPIKE DETECTED!")
+            print(f"Joint {acceleration_spike_joint} acceleration: {acceleration[acceleration_spike_joint]:.1f} rad/s^2")
+            print(f"(threshold: {self._max_acceleration:.1f} rad/s^2)")
+            print(f"Velocity changed from {self._prev_dqj[acceleration_spike_joint]:.3f} to {self.dqj[acceleration_spike_joint]:.3f} rad/s")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Check 4: Action output magnitude
+        max_action = np.max(np.abs(pytorch_actions))
+        max_action_joint = np.argmax(np.abs(pytorch_actions))
+        
+        if max_action > self._max_action_magnitude:
+            print("=" * 60)
+            print("SAFETY VIOLATION: ACTION MAGNITUDE TOO LARGE!")
+            print(f"Joint {max_action_joint} action: {pytorch_actions[max_action_joint]:.3f}")
+            print(f"(threshold: {self._max_action_magnitude:.3f})")
+            print("Model may be producing unsafe outputs.")
+            print("Switching to DAMPED mode for safety.")
+            print("=" * 60)
+            self.control_mode = "damped"
+            self.hold_target_pose = None
+            return False
+        
+        # Update previous state for next iteration
+        self._prev_qj = self.qj.copy()
+        self._prev_dqj = self.dqj.copy()
+        
+        return True
+
     def process_global_buttons(self):
-        # Select: immediate quit
+        # Select: immediate quit (ALWAYS ACTIVE)
         if self._rising("Select", self.remote.Select):
             print("Select pressed: Quitting...")
             sys.exit(0)
+        
+        # Start: Enable system (ALWAYS ACTIVE)
+        if self._rising("Start", self.remote.Start):
+            if not self._system_started:
+                print("=" * 60)
+                print("START PRESSED: System is now ACTIVE!")
+                print("All controls are now enabled.")
+                print("=" * 60)
+                self.audio_client.LedControl(0, 255, 0)  # Green LED to indicate system is active
+                self._system_started = True
+            else:
+                print("Start pressed again (system already active).")
+            return
+        
+        # All other buttons require system to be started
+        if not self._system_started:
+            return
+        
         # Y: Damped mode
         if self._rising("Y", self.remote.Y):
             print("Y pressed: Entering damped mode.")
             self.control_mode = "damped"
             self.hold_target_pose = None
+            self._safety_initialized = False  # Reset safety monitoring
         # X: Neural network control
         if self._rising("X", self.remote.X):
             print("X pressed: Entering neural network control mode.")
+            print("Safety monitoring active: position jumps, velocity spikes, acceleration, and action magnitude will be checked.")
             self.control_mode = "policy"
             self.hold_target_pose = None
+            self._safety_initialized = False  # Reset safety monitoring for fresh start
         # A: Lerp to crawl pose and hold
         if self._rising("A", self.remote.A):
             print("A pressed: Moving to set pose and holding.")
@@ -220,6 +392,10 @@ class Controller:
         if self._rising("B", self.remote.B):
             print("B pressed: Moving to default position and holding.")
             self.set_hold_pose(self.default_pos_array, total_time=2.0)
+        # F1: LED control
+        if self._rising("F1", self.remote.F1):
+            print("F1 pressed: Switching LED.")
+            self.audio_client.LedControl(255,0,0)
 
     def send_cmd(self, cmd: LowCmd_):
         cmd.crc = CRC().Crc(cmd)
@@ -260,9 +436,20 @@ class Controller:
     def LowStateHandler(self, msg: LowState_):
         self.low_state = msg
         self.mode_machine_ = self.low_state.mode_machine
-        # Update remote controller state
+        # Update remote controller state and heartbeat
         try:
-            self.remote.parse(self.low_state.wireless_remote)
+            wr = self.low_state.wireless_remote
+            if wr is not None and len(wr) >= 2:
+                # Check for remote activity in first two bytes
+                # When remote is ON: bytes 0-1 are non-zero (e.g., [85, 81])
+                # When remote is OFF: bytes 0-1 are [0, 0]
+                if not (wr[0] == 0 and wr[1] == 0):
+                    # Remote is active - update heartbeat
+                    self._last_remote_update_time = time.time()
+                    if not self._remote_connected:
+                        print("REMOTE RECONNECTED: Remote control is back online.")
+                        self._remote_connected = True
+                self.remote.parse(wr)
         except Exception:
             pass
 
@@ -432,6 +619,15 @@ class Controller:
         # Get actions from policy (in PyTorch order)
         pytorch_actions = self.policy.get_control(obs)
         
+        # SAFETY CHECK: Verify state and actions are safe before proceeding
+        if not self.check_safety_limits(pytorch_actions):
+            # Safety violation detected - check_safety_limits already switched to damped mode
+            # Send damping command and return early
+            create_damping_cmd(self.low_cmd)
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.control_dt)
+            return
+        
         # Store last action in PyTorch order for next observation
         self.last_action_pytorch = pytorch_actions.copy()
         
@@ -454,6 +650,8 @@ class Controller:
             for idx in clamped_indices:
                 print(f"  Joint {idx}: {motor_targets_unclamped[idx]:.3f} -> {motor_targets[idx]:.3f} (limits: [{self._joint_lower_bounds[idx]:.3f}, {self._joint_upper_bounds[idx]:.3f}])")
 
+        # print(f"Kp: {Kp}")
+        # print(f"Kd: {Kd}")
         # Build low cmd
         for i in range(G1_NUM_MOTOR):
             motor_idx = joint2motor_idx[i]
@@ -502,19 +700,42 @@ if __name__ == "__main__":
     print("Setting up policy...")
     policy = TorchPolicy(POLICY_PATH)
     print("WARNING: Please ensure there are no obstacles around the robot while running this example.")
-    print("Controls (always active):")
+    print("\n" + "=" * 60)
+    print("SAFETY: Press START button to enable all controls!")
+    print("=" * 60)
+    print("\nControls (active ONLY after pressing Start):")
     print("  A: Move to crawl pose and HOLD")
     print("  B: Move to DEFAULT pose and HOLD")
     print("  X: Neural network CONTROL (policy)")
     print("  Y: DAMPED mode")
+    print("  F1: RED LED")
+    print("\nAlways active:")
+    print("  Start: ENABLE system (press this first!)")
     print("  Select: QUIT immediately")
+    print("\nSafety features:")
+    print("  - Remote heartbeat: Auto-damped if remote disconnects (timeout: 0.5s)")
+    print("  - Position jump detection: Max 0.3 rad/timestep (15 rad/s)")
+    print("  - Velocity spike detection: Max 25.0 rad/s")
+    print("  - Acceleration spike detection: Max 1500 rad/s^2")
+    print("  - Action magnitude limit: Max 5.0")
+    print("  - Auto-damped mode on any safety violation")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
     controller = Controller(policy)
 
-    print("Controller ready. Use the buttons anytime as listed above.")
+    print("\n" + "=" * 60)
+    print("Controller ready. Press START to begin!")
+    print("=" * 60)
+    print("\n[DEBUG MODE ENABLED] Printing low_state info every second...")
+    print("Watch for changes when you turn off the remote controller.\n")
     while True:
+        # Print debug state periodically
+        # controller.print_debug_state()
+        
+        # Check remote heartbeat first (safety check)
+        controller.check_remote_heartbeat()
+        
         controller.process_global_buttons()
 
         if controller.control_mode == "policy":

@@ -50,8 +50,10 @@ def mirror_joint_tensor(original: torch.Tensor, mirrored: torch.Tensor, offset: 
         22 + offset   # right_wrist_roll
     ]
     
-    # First copy non-swapped, non-inverted values
-    non_swap_indices = [i for i in range(original.shape[-1]) if i not in [idx for pair in swap_pairs for idx in pair]]
+    # First copy non-swapped, non-inverted values (only within the 23-joint range)
+    all_joint_indices = list(range(offset, offset + 23))
+    swap_flat = [idx for pair in swap_pairs for idx in pair]
+    non_swap_indices = [i for i in all_joint_indices if i not in swap_flat]
     mirrored[..., non_swap_indices] = original[..., non_swap_indices]
     
     # Swap left/right pairs
@@ -131,4 +133,3 @@ def data_augmentation_func_g1(env, obs, actions, obs_type):
     
     mean_actions_batch = mirror_actions(actions)
     return obs_batch, mean_actions_batch
-

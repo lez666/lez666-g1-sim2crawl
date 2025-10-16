@@ -7,20 +7,35 @@ import sys
 
 G1_NUM_MOTOR = 23
 
+# Actuator constants from g1.py (calculated based on armature, natural frequency, damping ratio)
+STIFFNESS_5020 = 14.25062309787429
+STIFFNESS_7520_14 = 40.17923847137318
+STIFFNESS_7520_22 = 99.09842777666113
+DAMPING_5020 = 0.907222843292423
+DAMPING_7520_14 = 2.5578897650279457
+DAMPING_7520_22 = 6.3088018534966395
+
+# Kp/Kd values based on motor types for each joint
+# Joint mapping:
+#   hip_pitch, hip_yaw: 7520_14 motors
+#   hip_roll, knee: 7520_22 motors
+#   ankles: 5020 motors (2x for feet)
+#   waist_yaw: 7520_14 motor
+#   arms (shoulder/elbow/wrist): 5020 motors
 Kp = [
-    350, 200, 200, 300, 300, 150,     # legs (L: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
-    350, 200, 200, 300, 300, 150,     # legs (R: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
-    200,                               # waist_yaw
-    40, 40, 40, 40, 40,                # arms (L: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
-    40, 40, 40, 40, 40,                # arms (R: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
+    STIFFNESS_7520_14, STIFFNESS_7520_22, STIFFNESS_7520_14, STIFFNESS_7520_22, 2*STIFFNESS_5020, 2*STIFFNESS_5020,     # legs (L: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+    STIFFNESS_7520_14, STIFFNESS_7520_22, STIFFNESS_7520_14, STIFFNESS_7520_22, 2*STIFFNESS_5020, 2*STIFFNESS_5020,     # legs (R: hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+    STIFFNESS_7520_14,                                                                                                     # waist_yaw
+    STIFFNESS_5020, STIFFNESS_5020, STIFFNESS_5020, STIFFNESS_5020, STIFFNESS_5020,                                      # arms (L: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
+    STIFFNESS_5020, STIFFNESS_5020, STIFFNESS_5020, STIFFNESS_5020, STIFFNESS_5020,                                      # arms (R: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll)
 ]
 
 Kd = [
-    5, 5, 5, 10, 5, 5,    # legs (L)
-    5, 5, 5, 10, 5, 5,    # legs (R)
-    5,                    # waist_yaw
-    3, 3, 3, 3, 3,        # arms (L)
-    3, 3, 3, 3, 3,        # arms (R)
+    DAMPING_7520_14, DAMPING_7520_22, DAMPING_7520_14, DAMPING_7520_22, 2*DAMPING_5020, 2*DAMPING_5020,    # legs (L)
+    DAMPING_7520_14, DAMPING_7520_22, DAMPING_7520_14, DAMPING_7520_22, 2*DAMPING_5020, 2*DAMPING_5020,    # legs (R)
+    DAMPING_7520_14,                                                                                          # waist_yaw
+    DAMPING_5020, DAMPING_5020, DAMPING_5020, DAMPING_5020, DAMPING_5020,                                   # arms (L)
+    DAMPING_5020, DAMPING_5020, DAMPING_5020, DAMPING_5020, DAMPING_5020,                                   # arms (R)
 ]
 
 default_pos = [

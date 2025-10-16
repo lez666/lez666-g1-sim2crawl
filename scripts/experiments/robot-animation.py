@@ -126,6 +126,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
     anim_dt = float(anim["dt"]) if anim["dt"] else 1.0 / 30.0
     paused = False
     playback_speed = 1.0
+    last_reported_frame = -1  # Track last frame we logged height for
 
     # Reset to first frame
     scene_reset(scene, anim, joint_index_map)
@@ -426,6 +427,15 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
                 apply_animation_frame(scene, anim, frame_idx, joint_index_map)
                 # Draw contact flags at current frame
                 draw_contact_flags(frame_idx)
+                # Print base height every 10 frames (only once per frame)
+                if frame_idx % 10 == 0 and frame_idx != last_reported_frame:
+                    base_height = scene["Robot"].data.root_pos_w[0, 2]
+                    try:
+                        base_height_val = float(base_height.item())
+                    except AttributeError:
+                        base_height_val = float(base_height)
+                    print(f"[BASE HEIGHT] frame {frame_idx}: z = {base_height_val:.6f}")
+                    last_reported_frame = frame_idx
             
             # Advance frame only if not paused and not in manual stepping mode
             if not paused and not manual_stepping and sim_time - last_frame_time >= (anim_dt / max(1e-6, playback_speed)):
