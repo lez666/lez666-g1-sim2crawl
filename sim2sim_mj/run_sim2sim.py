@@ -64,8 +64,8 @@ CONFIG = {
     "button_policy_map": {
         0: "policies/policy_crawl.pt",      # A button
         1: "policies/policy_shamble.pt",    # B button
-        2: "policies/policy_crawl_start.pt", # X button
-        3: "policies/policy_shamble_start.pt", # Y button
+        2: "policies/policy_shamble_start.pt", # X button
+        3: "policies/policy.pt", # Y button # CRAWL START
     },
     
     # === CAMERA SETTINGS ===
@@ -573,10 +573,10 @@ def main():
                     v.sync()
                 
                 # Print status
-                if step % 500 == 0:
-                    root_pos = data.qpos[0:3]
-                    vel_str = f"vel=[{lin_vel_z:.2f}, {ang_vel_x:.2f}]" if use_gamepad else ""
-                    print(f"Step {step}: pos=[{root_pos[0]:.2f}, {root_pos[1]:.2f}, {root_pos[2]:.2f}] {vel_str}")
+                # if step % 500 == 0:
+                #     root_pos = data.qpos[0:3]
+                #     vel_str = f"vel=[{lin_vel_z:.2f}, {ang_vel_x:.2f}]" if use_gamepad else ""
+                #     print(f"Step {step}: pos=[{root_pos[0]:.2f}, {root_pos[1]:.2f}, {root_pos[2]:.2f}] {vel_str}")
     finally:
         # Cleanup gamepad
         if gamepad:
