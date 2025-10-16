@@ -438,7 +438,7 @@ class RewardsCfg:
     # Uses exponential reward centered at zero offset for smooth transitions from crawling to standing
     com_centered_over_feet = RewTerm(
         func=mdp.com_forward_of_feet_exp,
-        weight=1.0,
+        weight=0.3,
         params={
             "std": 0.1,  # Falloff rate in meters
             "target_offset": 0.0,  # Target: COM directly above feet (no forward lean)
