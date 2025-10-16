@@ -144,8 +144,8 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
     name_to_index = build_joint_name_to_index_map(scene["Robot"]) 
     
     # Track current pose index and auto-play state
-    current_pose_idx = 0
-    auto_play = True  # Start in auto-play mode
+    current_pose_idx = len(poses) - 1  # Start at last pose
+    auto_play = False  # Start paused to view the last pose
     playback_direction = 1  # 1 for forward, -1 for backward
     
     # Frame number display tracking
@@ -339,6 +339,26 @@ def run_pose_viewer(sim: sim_utils.SimulationContext, scene: InteractiveScene, p
 
     # Initial apply
     apply_pose_with_offsets()
+    
+    # Step simulation to update body positions
+    sim.step()
+    scene.update(sim.get_physics_dt())
+    
+    # Print z-coordinates of pelvis and torso_link
+    robot = scene["Robot"]
+    body_names = [str(n) for n in robot.data.body_names]
+    body_pos_w = robot.data.body_pos_w[0]  # [num_bodies, 3], get first env
+    
+    print("\n=== Body Heights (z-coordinates) ===")
+    for body_name in ["pelvis", "torso_link"]:
+        if body_name in body_names:
+            body_idx = body_names.index(body_name)
+            z_height = body_pos_w[body_idx, 2].item()
+            print(f"{body_name}: z = {z_height:.4f} m")
+        else:
+            print(f"{body_name}: NOT FOUND in body names")
+    print(f"Available body names: {body_names}")
+    print("=====================================\n")
 
     print("Starting pose viewer...")
     print(f"Loaded {len(poses)} poses from {pose_path}")
