@@ -98,7 +98,7 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-3.14, 3.14)
+            lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0), heading=(-3.14, 3.14)
         ),
     )
 
@@ -376,11 +376,11 @@ class RewardsCfg:
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
-        weight=1.0,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=1.0, params={"command_name": "base_velocity", "std": 0.5}
+        func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
     )
 
     # POSE
@@ -401,6 +401,15 @@ class RewardsCfg:
         params={
             "pose_path": DEFAULT_POSE_PATH,
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
+        },
+    )
+
+    pose_deviation_knees = RewTerm(
+        func=mdp.pose_json_deviation_l1,
+        weight=-0.1,
+        params={
+            "pose_path": DEFAULT_POSE_PATH,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_knee_joint"])
         },
     )
     
@@ -456,16 +465,16 @@ class RewardsCfg:
             )
         },
     )
-    dof_acc_l2 = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-1.0e-7,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            )
-        },
-    )
+    # dof_acc_l2 = RewTerm(
+    #     func=mdp.joint_acc_l2,
+    #     weight=-1.0e-7,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+    #         )
+    #     },
+    # )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
 
     # WALK QUALITY
@@ -505,15 +514,15 @@ class RewardsCfg:
     # )
 
 
-    both_feet_on_ground_stationary = RewTerm(
-        func=mdp.both_feet_on_ground_when_stationary,
-        weight=-.1,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.1,
-        },
-    )
+    # both_feet_on_ground_stationary = RewTerm(
+    #     func=mdp.both_feet_on_ground_when_stationary,
+    #     weight=-.1,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "threshold": 0.1,
+    #     },
+    # )
 
    
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)

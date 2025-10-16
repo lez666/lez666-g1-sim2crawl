@@ -84,7 +84,7 @@ class CommandsCfg:
     base_velocity = mdp.CrawlVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0,10.0),
-        rel_standing_envs=0.02,
+        rel_standing_envs=0.05,
         debug_vis=True,
         ranges=mdp.CrawlVelocityCommandCfg.Ranges(
             heading=(0.0,0.0),

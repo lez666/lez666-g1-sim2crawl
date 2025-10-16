@@ -283,24 +283,24 @@ class EventCfg:
 
             # Small random offsets on root pose at reset (position in meters, angles in radians)
             "pose_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
-                "z": (-0.05, 0.05),
-                "roll": (-0.050, 0.050),
-                "pitch": (-0.050, 0.050),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
                 "yaw": (-3.14, 3.14),
             },
             # Small random root velocity at reset (linear m/s, angular rad/s)
             "velocity_range": {
-                "x":  (-0.05, 0.05),
-                "y":  (-0.05, 0.05),
-                "z": (-0.05, 0.05),
-                "roll":  (-0.05, 0.05),
-                "pitch": (-0.05, 0.05),
-                "yaw": (-0.05, 0.05),
+                "x":  (-0.1, 0.1),
+                "y":  (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll":  (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1),
             },
-            "position_range": (0.95, 1.05),
-            "joint_velocity_range": (0.0, 0.0),
+            "position_range": (0.9, 1.1),
+            "joint_velocity_range": (-0.1, 0.1)
         },
     )
     
@@ -488,11 +488,11 @@ class RewardsCfg:
     #regulatorization
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-    # dof_acc_l2 = RewTerm(
-    #     func=mdp.joint_acc_l2,
-    #     weight=-2.0e-7,
-    #     params={"asset_cfg": SceneEntityCfg("robot")},
-    # )
+    dof_acc_l2 = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-2.0e-7,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
 
     both_feet_air = RewTerm(
         func=mdp.both_feet_air,
