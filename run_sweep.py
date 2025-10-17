@@ -10,71 +10,78 @@ from pathlib import Path
 # SWEEP CONFIGURATION - MODIFY THIS SECTION TO RUN DIFFERENT SWEEPS
 # =============================================================================
 
+# Auto-suspend configuration
+AUTO_SUSPEND = False  # Set to True to automatically suspend after all sweeps complete
+
 # Define multiple sweeps to run in sequence
 # Each entry will run as a complete sweep with its own experiment name and video compilation
 # Note: A 4-character nanoid will be automatically added to experiment names for uniqueness
 #       (e.g., "g1-crawl-start-sweep" becomes "g1-crawl-start-sweep_a1b2")
 SWEEP_QUEUE = [
     {
-        "task_name": "g1-crawl-start",
-        "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
+        "task_name": "g1-stand",
+        "experiment_name": "g1-stand-sweep",  # Nanoid will be auto-appended
         "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
         "sweep_params": {
-            "env.rewards.dof_acc_l2.weight": [0.0, -1e-2],
-            # "env.rewards.pose_deviation_all.weight": [-1.0,-0.3,-0.1],
-        },
-        "sweep_param_sets": [
-            # [
-            #     {
-            #         "env.rewards.pose_deviation_hip.weight": -0.3,
-            #         "env.rewards.base_height_l2.weight": -0.1,
-            #     },
-            #     {
-            #         "env.rewards.pose_deviation_hip.weight": -0.3,
-            #         "env.rewards.base_height_l2.weight": -1.,
-            #     }
-            # ],
-        ],
-        "exclude_rules": [
-            # Example: exclude when both params are 0.1
-            # {
-            #     "env.rewards.flat_orientation_l2.weight": 0.1,
-            #     "env.rewards.joint_deviation_all.weight": 0.1,
-            # },
-        ],
-    },
-    {
-        "task_name": "g1-crawl",
-        "experiment_name": "g1-crawl-sweep",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "sweep_params": {
-            "env.rewards.joint_deviation_all.weight": [-1e-2, -1e-1],
-        },
-        "sweep_param_sets": [ ],
-        "exclude_rules": [],
-    },
-    {
-        "task_name": "g1-shamble",
-        "experiment_name": "g1-shamble-sweep",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "sweep_params": {
-            "env.rewards.feet_air_time.weight": [3.0, 1.0, 0.1],
-            "env.rewards.pose_deviation_knees.weight": [-0.1, -0.3],
+             "env.rewards.both_feet_on_ground_stationary.weight": [-1e-1, 0.0],
+             "env.rewards.com_forward_lean.weight": [-1.0, 0.0],
+             "agent.max_iterations": [1500],
+
         },
         "sweep_param_sets": [],
         "exclude_rules": [],
     },
-    # Example: Add another sweep for shamble task
     # {
-    #     "task_name": "g1-shamble-start",
-    #     "experiment_name": "g1-shamble-sweep",  # Nanoid will be auto-appended
-    #     "start_from_run": 1,
+    #     "task_name": "g1-crawl-start",
+    #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
     #     "sweep_params": {
-    #         "env.rewards.lin_vel_xy.weight": [1.0, 2.0],
-    #         "env.rewards.flat_orientation_l2.weight": [-0.1, -0.5],
+    #          "env.rewards.dof_acc_l2.weight": [-1e-1, 0.0],
+    #          "env.rewards.com_forward_lean.weight": [-1.0, 0.0],
+    #          "agent.max_iterations": [1500],
+
     #     },
     #     "sweep_param_sets": [],
     #     "exclude_rules": [],
+    # },
+    # {
+    #     "task_name": "g1-shamble",
+    #     "experiment_name": "g1-shamble-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+    #     "sweep_params": {
+    #         "env.rewards.feet_air_time.weight": [3.0, 1.0],
+    #         "env.rewards.pose_deviation_knees.weight": [0.0, -0.1],
+    #     },
+    #     "sweep_param_sets": [],
+    #     "exclude_rules": [],
+    # }
+        # {
+    #     "task_name": "g1-crawl-start",
+    #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+    #     "sweep_params": {
+    #         "env.rewards.dof_acc_l2.weight": [-1e-3, -1e-4],
+    #         # "env.rewards.pose_deviation_all.weight": [-1.0,-0.3,-0.1],
+    #     },
+    #     "sweep_param_sets": [
+    #         # [
+    #         #     {
+    #         #         "env.rewards.pose_deviation_hip.weight": -0.3,
+    #         #         "env.rewards.base_height_l2.weight": -0.1,
+    #         #     },
+    #         #     {
+    #         #         "env.rewards.pose_deviation_hip.weight": -0.3,
+    #         #         "env.rewards.base_height_l2.weight": -1.,
+    #         #     }
+    #         # ],
+    #     ],
+    #     "exclude_rules": [
+    #         # Example: exclude when both params are 0.1
+    #         # {
+    #         #     "env.rewards.flat_orientation_l2.weight": 0.1,
+    #         #     "env.rewards.joint_deviation_all.weight": 0.1,
+    #         # },
+    #     ],
     # },
 ]
 
@@ -913,9 +920,11 @@ def analyze_sweep_results(experiment_name, base_logs_dir="logs/rsl_rl", create_o
 
 
 if __name__ == "__main__":
-    main() 
-    import time
-    print("\n⏳ Waiting 5 seconds before suspend...")
-    time.sleep(5)
-    print("💤 Suspending computer...")
-    subprocess.run(["systemctl", "suspend"], check=True)
+    main()
+    
+    if AUTO_SUSPEND:
+        import time
+        print("\n⏳ Waiting 5 seconds before suspend...")
+        time.sleep(5)
+        print("💤 Suspending computer...")
+        subprocess.run(["systemctl", "suspend"], check=True)

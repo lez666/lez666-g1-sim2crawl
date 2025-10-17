@@ -68,6 +68,9 @@ CONFIG = {
         3: "policies/policy.pt", # Y button # CRAWL START
     },
     
+    # Exit button (9 = Start/Menu button on most controllers)
+    "exit_button": 9,
+    
     # === CAMERA SETTINGS ===
     
     # Camera distance from robot (meters)
@@ -134,10 +137,11 @@ TRAINING_DEFAULT_ANGLES = {
 class GamepadController:
     """Gamepad input handler using GLFW."""
     
-    def __init__(self, button_policy_map: dict[int, str], max_lin_vel: float, max_ang_vel: float):
+    def __init__(self, button_policy_map: dict[int, str], max_lin_vel: float, max_ang_vel: float, exit_button: int = 9):
         self.button_policy_map = button_policy_map
         self.max_lin_vel = max_lin_vel
         self.max_ang_vel = max_ang_vel
+        self.exit_button = exit_button
         self.joystick_id = glfw.JOYSTICK_1
         self.last_button_state = [0] * 16  # Track button states for edge detection
         
@@ -165,6 +169,10 @@ class GamepadController:
             btn_name = button_names.get(btn_id, f"Button {btn_id}")
             policy_name = Path(policy_path).stem
             print(f"  {btn_name:12} -> {policy_name}")
+        
+        exit_button_names = {8: "Select/Back", 9: "Start/Menu"}
+        exit_btn_name = exit_button_names.get(self.exit_button, f"Button {self.exit_button}")
+        print(f"\n[GAMEPAD] Exit Button: {exit_btn_name}")
         print()
     
     def get_velocity_commands(self) -> tuple[float, float]:
@@ -218,6 +226,30 @@ class GamepadController:
                 self.last_button_state[btn_id] = current
         
         return None
+    
+    def check_exit(self) -> bool:
+        """Check if exit button was pressed.
+        
+        Returns:
+            True if exit button was pressed, False otherwise
+        """
+        state = glfw.get_gamepad_state(self.joystick_id)
+        if not state:
+            return False
+        
+        # Check exit button for rising edge (0->1)
+        if self.exit_button < len(state.buttons):
+            current = state.buttons[self.exit_button]
+            previous = self.last_button_state[self.exit_button]
+            
+            if current == 1 and previous == 0:  # Button just pressed
+                self.last_button_state[self.exit_button] = current
+                print("\n[GAMEPAD] Exit button pressed - shutting down...")
+                return True
+            
+            self.last_button_state[self.exit_button] = current
+        
+        return False
     
     def cleanup(self):
         """Clean up GLFW resources."""
@@ -447,6 +479,7 @@ def main():
     max_lin_vel = CONFIG.get("max_lin_vel", 2.0)
     max_ang_vel = CONFIG.get("max_ang_vel", 1.5)
     button_policy_map = CONFIG.get("button_policy_map", {})
+    exit_button = CONFIG.get("exit_button", 9)
     
     # Camera settings
     camera_distance = CONFIG.get("camera_distance", 3.0)
@@ -486,7 +519,8 @@ def main():
             gamepad = GamepadController(
                 button_policy_map=button_policy_map,
                 max_lin_vel=max_lin_vel,
-                max_ang_vel=max_ang_vel
+                max_ang_vel=max_ang_vel,
+                exit_button=exit_button
             )
             print("[INFO] Gamepad initialized - using analog sticks for control")
         except RuntimeError as e:
@@ -536,6 +570,10 @@ def main():
                     new_policy_path = gamepad.check_policy_switch()
                     if new_policy_path:
                         controller.load_policy(Path(new_policy_path))
+                    
+                    # Check for exit button
+                    if gamepad.check_exit():
+                        break
                 
                 # Get robot state
                 root_quat = data.qpos[3:7]

@@ -496,7 +496,7 @@ class RewardsCfg:
 
     both_feet_air = RewTerm(
         func=mdp.both_feet_air,
-        weight=-1.,
+        weight=-2.,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
@@ -505,7 +505,7 @@ class RewardsCfg:
 
     both_hand_air = RewTerm(
         func=mdp.both_feet_air,
-        weight=-1.,
+        weight=-2.,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wrist_link"),
         },

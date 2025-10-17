@@ -11,9 +11,9 @@ from .symmetry_func import data_augmentation_func_g1
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 3000
+    max_iterations = 2000
     save_interval = 250
-    experiment_name = "g1_crawl_v20"
+    experiment_name = "g1_crawl_stand_fromwarmup"
     empirical_normalization = False
     clip_actions = 10.0
     policy = RslRlPpoActorCriticCfg(
