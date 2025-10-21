@@ -33,7 +33,7 @@ from .g1 import G1_CFG
 ##
 
 # DEFAULT_POSE_PATH = "assets/default-pose.json"
-DEFAULT_POSE_PATH = "assets/stand-pose-rc2.json"
+# STAND_POSE_PATH = "assets/stand-pose-rc2.json"
 
 
 ##
@@ -42,7 +42,7 @@ DEFAULT_POSE_PATH = "assets/stand-pose-rc2.json"
 
 
 @configclass
-class G1ShambleSceneCfg(InteractiveSceneCfg):
+class G1QuadSceneCfg(InteractiveSceneCfg):
   # ground terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -98,7 +98,7 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1., 1.), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.0, 1.0), heading=(-3.14, 3.14)
+            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-3.14, 3.14)
         ),
     )
 
@@ -265,53 +265,24 @@ class EventCfg:
 
     # reset
     # Reset robot to pose from JSON with optional noise/scaling for both root and joints
-    reset_robot = EventTerm(
-        func=mdp.reset_to_pose_json,
-        mode="reset",
-        params={
-            "json_path": DEFAULT_POSE_PATH,
-            # Root pose noise (position in meters, angles in radians)
-            "pose_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "yaw": (-3.14, 3.14),
-            },
-            "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
-            },
-
-            "position_range": (0.9, 1.1),
-            # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-            "joint_velocity_range": (0.0, 0.0),
-        },
-    )
-
     # reset_robot = EventTerm(
     #     func=mdp.reset_to_pose_json,
     #     mode="reset",
     #     params={
-    #         "json_path": "assets/default-pose.json",
+    #         "json_path": DEFAULT_POSE_PATH,
     #         # Root pose noise (position in meters, angles in radians)
     #         "pose_range": {
     #             "x": (-0.1, 0.1),
     #             "y": (-0.1, 0.1),
-    #             "z": (-0.1, 0.1),
-    #             "roll": (-0.1, 0.1),
-    #             "pitch": (-0.1, 0.1),
-    #             # "yaw": (-3.14, 3.14),
+    #             "yaw": (-3.14, 3.14),
     #         },
     #         "velocity_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "z": (-0.1, 0.1),
-    #             "roll": (-0.1, 0.1),
-    #             "pitch": (-0.1, 0.1),
-    #             "yaw": (-0.1, 0.1),
+    #             "x": (0.0, 0.0),
+    #             "y": (0.0, 0.0),
+    #             "z": (0.0, 0.0),
+    #             "roll": (0.0, 0.0),
+    #             "pitch": (0.0, 0.0),
+    #             "yaw": (0.0, 0.0),
     #         },
 
     #         "position_range": (0.9, 1.1),
@@ -319,6 +290,36 @@ class EventCfg:
     #         "joint_velocity_range": (0.0, 0.0),
     #     },
     # )
+
+    
+    reset_robot = EventTerm(
+        func=mdp.reset_to_pose_json,
+        mode="reset",
+        params={
+            "json_path": "assets/quad-pose.json",
+            # # Root pose noise (position in meters, angles in radians)
+            # "pose_range": {
+            #     "x": (-0.1, 0.1),
+            #     "y": (-0.1, 0.1),
+            #     "z": (-0.1, 0.1),
+            #     "roll": (-0.1, 0.1),
+            #     "pitch": (-0.1, 0.1),
+            #     # "yaw": (-3.14, 3.14),
+            # },
+            # "velocity_range": {
+            #     "x": (-0.1, 0.1),
+            #     "y": (-0.1, 0.1),
+            #     "z": (-0.1, 0.1),
+            #     "roll": (-0.1, 0.1),
+            #     "pitch": (-0.1, 0.1),
+            #     "yaw": (-0.1, 0.1),
+            # },
+
+            # "position_range": (0.9, 1.1),
+            # # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
+            # "joint_velocity_range": (0.0, 0.0),
+        },
+    )
 
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity_with_viz,
@@ -331,131 +332,93 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.2)
-    # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
-    dof_torques_l2 = RewTerm(
-        func=mdp.joint_torques_l2,
-        weight=-0.001,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            )
-        },
-    )
-    dof_acc_l2 = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-0.001,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            )
-        },
-    )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001)
+    
 
+    # COMMAND
+    # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.3)
+    # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.3)
+    # track_lin_vel_xy_exp = RewTerm(
+    #     func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
+    #     weight=2.0,
+    #     params={"command_name": "base_velocity", "std": 0.5},
+    # )
+    # track_ang_vel_z_exp = RewTerm(
+    #     func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
+    # )
+
+    # POSE
+
+    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
+    
+    
+    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
         weight=-.1,
         params={
-            "target_height": 0.76,
+            "target_height": 0.4,
             "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+            # "sensor_cfg": SceneEntityCfg("height_scanner"),
         },
     )
+    
 
+    # pose_deviation_all = RewTerm(
+    #     func=mdp.pose_json_deviation_l1,
+    #     weight=-0.3,
+    #     params={
+    #         "pose_path": "assets/quad-pose.json",
+    #         "asset_cfg": SceneEntityCfg("robot")
+    #     },
+    # )
 
-    # undesired_contacts = None
-
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-.1)
-
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
-    track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
-        weight=2.0,
-        params={"command_name": "base_velocity", "std": 0.5},
-    )
-    track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
-    )
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=3.,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.2,
-        },
-    )
-
-    both_feet_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-0.5,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-        },
-    )
-
-    feet_slide = RewTerm(
-        func=mdp.feet_slide,
+    pose_deviation_hip = RewTerm(
+        func=mdp.pose_json_deviation_l1,
         weight=-0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "pose_path":"assets/quad-pose.json",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
         },
     )
 
-    # Penalize ankle joint limits
-    # dof_pos_limits = RewTerm(
-    #     func=mdp.joint_pos_limits,
-    #     weight=-1.0,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"])},
-    # )
+
+
+    # SAFETY / REGULATORIZATION
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-10.0,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     torque_limits = RewTerm(
         func=mdp.applied_torque_limits,
-        weight=-10.0,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
-    
-    # Penalize deviation from target pose for non-essential locomotion joints
-    pose_deviation_hip = RewTerm(
-        func=mdp.pose_json_deviation_l1,
-        weight=-0.3,
+
+    dof_torques_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-1.0e-4,
         params={
-            "pose_path": DEFAULT_POSE_PATH,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
-        },
-    )
-    
-    pose_deviation_arms = RewTerm(
-        func=mdp.pose_json_deviation_l1,
-        weight=-0.1,
-        params={
-            "pose_path": DEFAULT_POSE_PATH,
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                joint_names=[
-                    ".*_shoulder_pitch_joint",
-                    ".*_shoulder_roll_joint",
-                    ".*_shoulder_yaw_joint",
-                    ".*_elbow_joint",
-                    ".*_wrist_roll_joint",
-                ],
+                joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
             )
         },
     )
-    
-    pose_deviation_torso = RewTerm(
-        func=mdp.pose_json_deviation_l1,
-        weight=-0.1,
+
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+
+
+    undesired_body_contact_penalty = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-5.0,
         params={
-            "pose_path": DEFAULT_POSE_PATH,
-            "asset_cfg": SceneEntityCfg("robot", joint_names="waist_yaw_joint")
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names="^(?!.*ankle_roll_link|.*wrist_link).*",
+            ),
+            "threshold": 1.0,  # in Newtons (normal force magnitude)
         },
     )
 
@@ -465,21 +428,36 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    base_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names="^(?!.*ankle_roll_link).*",
-            ),
-            "threshold": 1.0,
-        },
-    )
+    # base_contact = DoneTerm(
+    #     func=mdp.illegal_contact,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names="^(?!.*ankle_roll_link).*",
+    #         ),
+    #         "threshold": 1.0,
+    #     },
+    # )
+
+# @configclass
+# class CurriculumCfg:
+#     """Curriculum terms for progressive difficulty."""
+    
+
+#     both_feet_weight = CurrTerm(
+#         func=mdp.modify_term_cfg,
+#         params={
+#             "address":  "rewards.both_feet_on_ground_stationary.weight",   # note: `_manager.cfg` is omitted
+#             "modify_fn": mdp.override_value,
+#             "modify_params": {"value": -1.0, "num_steps": 24*2000}
+#         }
+#     )
+
 
 @configclass
-class G1ShambleEnvCfg(ManagerBasedRLEnvCfg):
+class G1QuadEnvCfg(ManagerBasedRLEnvCfg):
     # Scene settings
-    scene: G1ShambleSceneCfg = G1ShambleSceneCfg(num_envs=4096, env_spacing=4.0)
+    scene: G1QuadSceneCfg = G1QuadSceneCfg(num_envs=4096, env_spacing=4.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: CommandsCfg = CommandsCfg()
@@ -517,6 +495,7 @@ class G1ShambleEnvCfg(ManagerBasedRLEnvCfg):
         # Set terrain to plane and disable height scanning
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
 
         # self.scene.height_scanner = None
 

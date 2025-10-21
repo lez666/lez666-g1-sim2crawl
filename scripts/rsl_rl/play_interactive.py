@@ -89,6 +89,77 @@ def _get_robot_pose(env):
         return None, None
 
 
+def _check_joint_limits(env, print_interval_steps: int = 500):
+    """Check if any joints exceed their limits and print warnings.
+    
+    Args:
+        env: The environment (will unwrap to get robot)
+        print_interval_steps: Only print violations every N steps to avoid spam
+    """
+    try:
+        base_env = env.unwrapped
+        robot = base_env.scene["robot"]
+        
+        # Get joint limits (prefer soft limits, fall back to hard limits)
+        limits = None
+        limits_label = None
+        try:
+            limits = robot.data.soft_joint_pos_limits[0]
+            limits_label = "soft"
+        except Exception:
+            try:
+                limits = robot.data.joint_pos_limits[0]
+                limits_label = "hard"
+            except Exception:
+                return  # No limits available
+        
+        if limits is None:
+            return
+        
+        # Get current joint positions
+        joint_pos = robot.data.joint_pos[0]
+        joint_names = robot.data.joint_names
+        
+        # Check for violations
+        lower = limits[:, 0]
+        upper = limits[:, 1]
+        
+        below_mask = joint_pos < lower
+        above_mask = joint_pos > upper
+        
+        violations = []
+        for i in range(len(joint_names)):
+            if below_mask[i]:
+                violations.append((
+                    joint_names[i],
+                    float(joint_pos[i]),
+                    float(lower[i]),
+                    float(upper[i]),
+                    "below"
+                ))
+            elif above_mask[i]:
+                violations.append((
+                    joint_names[i],
+                    float(joint_pos[i]),
+                    float(lower[i]),
+                    float(upper[i]),
+                    "above"
+                ))
+        
+        if violations:
+            print("\n" + "=" * 80)
+            print(f"⚠️  JOINT LIMIT VIOLATIONS ({limits_label} limits):")
+            print("=" * 80)
+            for name, pos, lo, hi, direction in violations:
+                exceed = pos - hi if direction == "above" else lo - pos
+                print(f"  {name}: {pos:.4f} {'>' if direction == 'above' else '<'} [{lo:.4f}, {hi:.4f}] (exceeds by {exceed:.4f} rad)")
+            print("=" * 80 + "\n")
+    
+    except Exception as e:
+        # Silently ignore if robot structure doesn't match expectations
+        pass
+
+
 def _viz_keyboard_command_relative_to_base(env, cmd_vals, duration: float = 0.1):
     if not _DEBUG_DRAW_AVAILABLE:
         return
@@ -243,6 +314,10 @@ def main():
     # reset environment
     obs, _ = env.get_observations()
     timestep = 0
+    
+    # Joint limit monitoring (print every N steps to avoid spam)
+    check_limits_interval = 500
+    
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -259,11 +334,17 @@ def main():
             # env stepping
             obs, _, _, _ = env.step(actions)
 
+        # Check joint limits periodically
+        if timestep % check_limits_interval == 0:
+            _check_joint_limits(env, check_limits_interval)
+
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
+        else:
+            timestep += 1
 
         # time delay for real-time evaluation
         sleep_time = dt - (time.time() - start_time)

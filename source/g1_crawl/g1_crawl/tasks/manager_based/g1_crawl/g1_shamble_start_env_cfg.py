@@ -33,7 +33,7 @@ from .g1 import G1_CFG
 ##
 
 CRAWL_POSE_PATH = "assets/crawl-pose.json"
-STAND_POSE_PATH = "assets/stand-pose-rc2.json"
+STAND_POSE_PATH = "assets/default-pose.json"
 
 
 @configclass
@@ -312,22 +312,22 @@ class EventCfg:
             "json_path": CRAWL_POSE_PATH,
             # Root pose noise (position in meters, angles in radians)
             "pose_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
                 "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
-                "z": (-0.05, 0.05),
-                "roll": (-0.05, 0.05),
-                "pitch": (-0.05, 0.05),
-                "yaw": (-0.05, 0.05)
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1)
             },
 
-            "position_range": (0.95, 1.05),
+            "position_range": (0.9, 1.1),
             # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-            "joint_velocity_range": (0.0, 0.0),
+            "joint_velocity_range": (-0.1, 0.1),
         },
     )
 
@@ -432,15 +432,15 @@ class CurriculumCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
     #orientation
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=1.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
     
     # Encourage COM to be centered between feet (not forward/backward) for stable standing
-    # Uses exponential reward centered at zero offset for smooth transitions from crawling to standing
+    # Uses linear reward centered at zero offset - only measures horizontal distance on ground plane
     com_centered_over_feet = RewTerm(
-        func=mdp.com_forward_of_feet_exp,
-        weight=0.3,
+        func=mdp.com_forward_of_feet_linear,
+        weight=1.0,
         params={
-            "std": 0.1,  # Falloff rate in meters
+            "tolerance": 0.15,  # Linear falloff up to this distance (meters)
             "target_offset": 0.0,  # Target: COM directly above feet (no forward lean)
             "asset_cfg": SceneEntityCfg("robot"),
             "feet_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
@@ -449,7 +449,7 @@ class RewardsCfg:
 
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
-        weight=-0.3,
+        weight=-1.0,
         params={
             "target_height": 0.78,
             "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
@@ -459,7 +459,7 @@ class RewardsCfg:
     
     pose_deviation_all = RewTerm(
         func=mdp.pose_json_deviation_l1,
-        weight=-0.3,
+        weight=-0.1,
         params={
             "pose_path": STAND_POSE_PATH,
             "asset_cfg": SceneEntityCfg("robot")
@@ -481,7 +481,11 @@ class RewardsCfg:
     #regulatorization
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-
+    # dof_acc_l2 = RewTerm(
+    #     func=mdp.joint_acc_l2,
+    #     weight=-2.0e-7,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    # )
     # both_feet_air = RewTerm(
     #     func=mdp.both_feet_air,
     #     weight=-1.,
@@ -493,7 +497,7 @@ class RewardsCfg:
 
     undesired_body_contact_penalty = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-10.0,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -503,7 +507,7 @@ class RewardsCfg:
         },
     )
 
-    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
 
 
@@ -511,10 +515,10 @@ class RewardsCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # base_contact = DoneTerm(
-    #     func=mdp.illegal_contact,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
-    # )
+    base_contact = DoneTerm(
+        func=mdp.illegal_contact,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="^(?!.*ankle_roll_link|.*wrist_link).*"), "threshold": 1.0},
+    )
 
 @configclass
 class G1ShambleStartEnvCfg(ManagerBasedRLEnvCfg):

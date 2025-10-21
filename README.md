@@ -31,3 +31,6 @@ python scripts/rsl_rl/train.py \
   python scripts/rsl_rl/train.py \
   --task g1-crawl-start 
   --resume_checkpoint /home/logan/Projects/g1_crawl/logs/rsl_rl/g1_crawl_start/2025-10-17_07-58-54/model_1999.pt 
+
+ python scripts/rsl_rl/train.py --task g1-shamble-start 
+  --resume_checkpoint /home/logan/Projects/g1_crawl/logs/rsl_rl/g1-crawl-sweep_xoxa/2025-10-16_21-41-30_Sebz/model_2999.pt

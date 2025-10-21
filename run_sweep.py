@@ -11,50 +11,69 @@ from pathlib import Path
 # =============================================================================
 
 # Auto-suspend configuration
-AUTO_SUSPEND = False  # Set to True to automatically suspend after all sweeps complete
+AUTO_SUSPEND = True  # Set to True to automatically suspend after all sweeps complete
 
 # Define multiple sweeps to run in sequence
 # Each entry will run as a complete sweep with its own experiment name and video compilation
 # Note: A 4-character nanoid will be automatically added to experiment names for uniqueness
 #       (e.g., "g1-crawl-start-sweep" becomes "g1-crawl-start-sweep_a1b2")
 SWEEP_QUEUE = [
-    {
-        "task_name": "g1-stand",
-        "experiment_name": "g1-stand-sweep",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "sweep_params": {
-             "env.rewards.both_feet_on_ground_stationary.weight": [-1e-1, 0.0],
-             "env.rewards.com_forward_lean.weight": [-1.0, 0.0],
-             "agent.max_iterations": [1500],
-
-        },
-        "sweep_param_sets": [],
-        "exclude_rules": [],
-    },
     # {
-    #     "task_name": "g1-crawl-start",
-    #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
+    #     "task_name": "g1-shamble-start",
+    #     "experiment_name": "g1-shamble-start-sweep",  # Nanoid will be auto-appended
     #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
     #     "sweep_params": {
-    #          "env.rewards.dof_acc_l2.weight": [-1e-1, 0.0],
-    #          "env.rewards.com_forward_lean.weight": [-1.0, 0.0],
-    #          "agent.max_iterations": [1500],
+    #         #  "env.rewards.flat_orientation_l2.weight": [-3.0],
+    #          "env.rewards.com_centered_over_feet.weight": [1.0, 1e-1, 0.0],
+    #          "env.rewards.dof_acc_l2.weight": [-1e-1, -1e-2, 0.0],
+
+    #          "agent.max_iterations": [2500],
 
     #     },
     #     "sweep_param_sets": [],
     #     "exclude_rules": [],
     # },
-    # {
-    #     "task_name": "g1-shamble",
-    #     "experiment_name": "g1-shamble-sweep",  # Nanoid will be auto-appended
-    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-    #     "sweep_params": {
-    #         "env.rewards.feet_air_time.weight": [3.0, 1.0],
-    #         "env.rewards.pose_deviation_knees.weight": [0.0, -0.1],
-    #     },
-    #     "sweep_param_sets": [],
-    #     "exclude_rules": [],
-    # }
+
+    {
+        "task_name": "g1-crawl",
+        "experiment_name": "g1-crawl-sweep",  # Nanoid will be auto-appended
+        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+        "sweep_params": {
+            # "env.rewards.leg_joint_vel_l2.weight": [-1e-3, 0.0],
+            # "env.rewards.action_rate_l2.weight": [-1e-3, 0.0],
+            # "env.rewards.feet_slide.params.threshold": [1e-2, 0.0],
+            # "env.rewards.leg_joint_vel_l2.weight": [ 1e-3],
+            # "env.rewards.action_rate_l2.weight": [ 1e-3],
+            # "env.rewards.feet_slide.params.threshold": [1e-3],
+            # "env.rewards.com_centered.weight": [1e-1, 0.0],
+            # "env.rewards.foot_clearance.weight": [0.5,0.1,0.0],
+            # "env.rewards.slippage.weight": [-3e-1],
+            # "env.rewards.pose_deviation_knees.weippoght": [0.0, -0.1],
+            # "env.rewards.dof_acc_l2.weight": [0.0, -1e-2],
+            #  "agent.max_iterations": [3500],
+
+        },
+        "sweep_param_sets": [],
+        "exclude_rules": [],
+    },
+        {
+        "task_name": "g1-shamble",
+        "experiment_name": "g1-shamble-sweep",  # Nanoid will be auto-appended
+        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+        "sweep_params": {
+            # "env.rewards.leg_joint_vel_l2.weight": [-1e-3, 0.0],
+            "env.rewards.feet_air_time.weight": [3.,1.,0.3],
+            # "env.rewards.feet_slide.params.threshold": [1e-2, 0.0],
+            # "env.rewards.leg_joint_vel_l2.weight": [ 1e-3],
+            # "env.rewards.action_rate_l2.weight": [ 1e-3],
+            # "env.rewards.feet_slide.params.threshold": [1e-3],
+            "env.rewards.feet_air_time.params.threshold": [0.2, 0.10]
+            # "env.rewards.pose_deviation_knees.weight": [0.0, -0.1],
+            # "env.rewards.dof_acc_l2.weight": [0.0, -1e-2],
+        },
+        "sweep_param_sets": [],
+        "exclude_rules": [],
+    },
         # {
     #     "task_name": "g1-crawl-start",
     #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended

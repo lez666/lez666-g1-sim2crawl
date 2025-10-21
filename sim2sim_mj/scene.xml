@@ -177,7 +177,7 @@
                   <body name="left_forearm" pos="0.1 0.00188791 -0.01">
                     <inertial pos="0.111202 -7.2e-05 0.000102" quat="-0.207237 0.677354 -0.206477 0.67499" mass="0.106" diaginertia="0.000445017 0.000444753 5.02536e-05"/>
                     <geom class="visual" mesh="forearm"/>
-                    <geom name="left_hand_collision" class="collision" size="0.02" pos="0.18 0 0" type="sphere" condim="1" rgba="0.2 0.6 0.2 0.2"/>
+                    <geom name="left_hand_collision" class="collision" size="0.02" pos="0.18 0 0" type="sphere" condim="1" rgba="0.2 0.6 0.2 0.2" friction="0.6"/>
                     <site name="left_palm" pos="0.2 0 0"/>
                   </body>
                 </body>
@@ -206,7 +206,7 @@
                   <body name="right_forearm" pos="0.1 -0.00188791 -0.01">
                     <inertial pos="0.111202 -7.2e-05 0.000102" quat="-0.207237 0.677354 -0.206477 0.67499" mass="0.106" diaginertia="0.000445017 0.000444753 5.02536e-05"/>
                     <geom class="visual" mesh="forearm"/>
-                    <geom name="right_hand_collision" class="collision" size="0.02" pos="0.18 0 0" type="sphere" condim="1" rgba="0.2 0.6 0.2 0.2"/>
+                    <geom name="right_hand_collision" class="collision" size="0.02" pos="0.18 0 0" type="sphere" condim="1" rgba="0.2 0.6 0.2 0.2" friction="0.6"/>
                     <site name="right_palm" pos="0.2 0 0"/>
                   </body>
                 </body>

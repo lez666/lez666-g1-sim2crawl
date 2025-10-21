@@ -429,7 +429,7 @@ def main():
     # Hardcode the pose file path (adjust if needed)
     # pose_path = "assets/crawl-pose.json"
     # pose_path = "assets/stand-pose-rc2.json"
-    pose_path = "assets/sorted-poses-rc3.json"
+    pose_path = "assets/quad-pose.json"
 
     print(f"[INFO]: Loading poses from '{pose_path}'...")
     run_pose_viewer(sim, scene, pose_path)

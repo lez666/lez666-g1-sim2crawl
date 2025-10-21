@@ -21,6 +21,7 @@ from utils import (
     init_joint_mappings,
     remap_pytorch_to_mujoco,
     remap_mujoco_to_pytorch,
+    MUJOCO_JOINT_NAMES,
 )
 from unitree_sdk2py.utils.thread import RecurrentThread
 from unitree_sdk2py.utils.crc import CRC
@@ -39,27 +40,85 @@ import numpy as np
 import torch
 
 NETWORK_CARD_NAME = 'enxc8a362b43bfd'
-POLICY_PATH = "/home/logan/Projects/g1_crawl/deployment/policy.pt"
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# List of policies to cycle through with A button
+# All policies are loaded at startup for seamless switching
+POLICY_PATHS = [
+    "policies/policy_shamble.pt",
+    "policies/policy_crawl_start.pt",
+    "policies/policy_crawl.pt",
+    # "policies/policy_shamble_start.pt",
+]
+
+# Safety flag: set to False to test state logic without moving motors
+ENABLE_MOTOR_COMMANDS = True
+
+# Policy cycling behavior: if False, stops at last policy instead of looping back to first
+# Useful to prevent accidental return to first policy before transition is smooth
+LOOP_POLICIES = False
+
+# Velocity command limits (scaled by gamepad sticks)
+MAX_LIN_VEL_FORWARD = 1.5  # m/s - Max forward/backward velocity (left stick Y)
+MAX_LIN_VEL_LATERAL = 1.5  # m/s - Max lateral velocity (left stick X)
+MAX_ANG_VEL_YAW = 1.5      # rad/s - Max angular velocity (right stick X)
+
+# Transition timing (seconds) - smooth lerping between modes
+TRANSITION_TIME_HOLD_POSES = 2.0  # For default_pos and crawl_pos modes
+TRANSITION_TIME_POLICY = 0.5      # For policy mode
+
+# Control modes (switched via D-pad):
+#   UP:    default_pos - Hold default standing position
+#   DOWN:  crawl_pos   - Hold crawl position
+#   LEFT:  damped      - Damped/compliant mode
+#   RIGHT: policy      - Active neural network control
+#
+# Velocity commands (in policy mode):
+#   Left stick Y:  Forward/backward velocity (±MAX_LIN_VEL_FORWARD)
+#   Left stick X:  Lateral velocity/strafe (±MAX_LIN_VEL_LATERAL)
+#   Right stick X: Angular velocity/yaw rotation (±MAX_ANG_VEL_YAW)
+# ============================================================================
 
 
 
 class TorchPolicy:
     """PyTorch controller for the G1 robot."""
 
-    def __init__(self, policy_path: str):
-        self._policy = torch.load(policy_path, weights_only=False)
-        self._policy.eval()  # Set to evaluation mode
+    def __init__(self, policy_paths: list):
+        """Load multiple policies for seamless switching."""
+        self._policies = []
+        print(f"Loading {len(policy_paths)} policies...")
+        for i, path in enumerate(policy_paths):
+            print(f"  [{i}] Loading {path}")
+            policy = torch.load(path, weights_only=False)
+            policy.eval()  # Set to evaluation mode
+            self._policies.append(policy)
+        
+        self._current_policy_idx = 0
+        print(f"Active policy: [{self._current_policy_idx}] {policy_paths[self._current_policy_idx]}")
         
         # Initialize joint mappings
         init_joint_mappings()
 
+    def set_policy_index(self, idx: int):
+        """Switch to a different policy by index."""
+        if 0 <= idx < len(self._policies):
+            self._current_policy_idx = idx
+
+    def get_num_policies(self) -> int:
+        """Return the number of loaded policies."""
+        return len(self._policies)
+
     def get_control(self, obs: np.ndarray) -> np.ndarray:
-        """Get control actions from PyTorch policy."""
+        """Get control actions from currently active PyTorch policy."""
         # Convert to torch tensor and run inference
         obs_tensor = torch.from_numpy(obs).float()
         
         with torch.no_grad():
-            action_tensor = self._policy(obs_tensor)
+            action_tensor = self._policies[self._current_policy_idx](obs_tensor)
             pytorch_pred = action_tensor.numpy()  # Actions in PyTorch model joint order
 
         return pytorch_pred
@@ -196,11 +255,21 @@ class Controller:
         # Initialize the command msg
         init_cmd_hg(self.low_cmd, self.mode_machine_, self.mode_pr_)
 
-        # Unified control state
-        self.control_mode = "damped"  # one of {"damped", "policy", "hold"}
-        self.hold_target_pose = None  # type: np.ndarray | None
-        self._prev_buttons = {"A": 0, "B": 0, "X": 0, "Y": 0, "Select": 0, "F1": 0, "Start": 0}
-        self._max_forward_speed = 1.5  # Ly -> [0, 1.5]
+        # Unified control state - 4 modes mapped to D-pad
+        self.control_mode = "damped"  # one of {"default_pos", "crawl_pos", "damped", "policy"}
+        self._prev_buttons = {"A": 0, "Up": 0, "Down": 0, "Left": 0, "Right": 0, "Select": 0, "F1": 0, "Start": 0}
+        
+        # Policy cycling
+        self._current_policy_idx = 0
+        self._policy_paths = POLICY_PATHS  # Store for display
+        
+        # Transition state for smooth lerping between modes
+        self._in_transition = False
+        self._transition_start_pos = None
+        self._transition_target_pos = None
+        self._transition_start_time = None
+        self._transition_duration = 0.0
+        self._transition_target_mode = None
         
         # Safety gate: require Start button press before allowing controls
         self._system_started = False
@@ -210,22 +279,80 @@ class Controller:
         self._prev_buttons[name] = current
         return current == 1 and was == 0
 
-    def _send_hold_command(self):
-        if self.hold_target_pose is None:
-            return
+    def _start_transition(self, target_mode: str, target_pos: np.ndarray, duration: float):
+        """Start a smooth transition to a new mode with target position."""
+        # Capture current joint positions
+        current_pos = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+        for i in range(G1_NUM_MOTOR):
+            current_pos[i] = self.low_state.motor_state[joint2motor_idx[i]].q
+        
+        self._in_transition = True
+        self._transition_start_pos = current_pos.copy()
+        self._transition_target_pos = target_pos.copy()
+        self._transition_start_time = time.time()
+        self._transition_duration = duration
+        self._transition_target_mode = target_mode
+        self._safety_initialized = False  # Reset safety checks for new mode
+
+    def send_cmd(self, cmd: LowCmd_):
+        """Centralized command sending with safety flag check."""
+        cmd.crc = CRC().Crc(cmd)
+        if ENABLE_MOTOR_COMMANDS:
+            self.lowcmd_publisher_.Write(cmd)
+        else:
+            # In test mode, just silently skip sending
+            pass
+
+    def _execute_transition_step(self):
+        """Execute one step of the transition. Returns True if transition complete."""
+        if not self._in_transition:
+            return True
+        
+        elapsed = time.time() - self._transition_start_time
+        alpha = min(1.0, elapsed / self._transition_duration)
+        
+        # Lerp from start to target
+        for i in range(G1_NUM_MOTOR):
+            motor_idx = joint2motor_idx[i]
+            current_q = self._transition_start_pos[i] * (1 - alpha) + self._transition_target_pos[i] * alpha
+            self.low_cmd.motor_cmd[motor_idx].q = current_q
+            self.low_cmd.motor_cmd[motor_idx].qd = 0
+            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].tau = 0
+        
+        self.send_cmd(self.low_cmd)
+        
+        # Check if transition complete
+        if alpha >= 1.0:
+            self._in_transition = False
+            self.control_mode = self._transition_target_mode
+            print(f"Transition complete: Now in {self.control_mode} mode")
+            return True
+        
+        return False
+
+    def send_default_pos_command(self):
+        """Send command to hold default position."""
         for i in range(len(joint2motor_idx)):
             motor_idx = joint2motor_idx[i]
-            self.low_cmd.motor_cmd[motor_idx].q = float(self.hold_target_pose[i])
+            self.low_cmd.motor_cmd[motor_idx].q = float(self.default_pos_array[i])
             self.low_cmd.motor_cmd[motor_idx].qd = 0
             self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
             self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
         self.send_cmd(self.low_cmd)
 
-    def set_hold_pose(self, target_pose: np.ndarray, total_time: float = 2.0):
-        self.move_to_pose(target_pose, total_time=total_time)
-        self.hold_target_pose = target_pose.copy()
-        self.control_mode = "hold"
+    def send_crawl_pos_command(self):
+        """Send command to hold crawl position."""
+        for i in range(len(joint2motor_idx)):
+            motor_idx = joint2motor_idx[i]
+            self.low_cmd.motor_cmd[motor_idx].q = float(self.crawl_angles_array[i])
+            self.low_cmd.motor_cmd[motor_idx].qd = 0
+            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].tau = 0
+        self.send_cmd(self.low_cmd)
 
     # def print_debug_state(self):
     #     """Print debug information about low_state periodically."""
@@ -260,7 +387,6 @@ class Controller:
                 # Force damped mode
                 if self.control_mode != "damped":
                     self.control_mode = "damped"
-                    self.hold_target_pose = None
             return False
         return True
 
@@ -282,15 +408,15 @@ class Controller:
         position_jump_joint = np.argmax(position_delta)
         
         if max_position_delta > self._max_position_jump:
+            joint_name = MUJOCO_JOINT_NAMES[position_jump_joint]
             print("=" * 60)
             print("SAFETY VIOLATION: POSITION JUMP DETECTED!")
-            print(f"Joint {position_jump_joint} jumped {max_position_delta:.3f} rad in one timestep")
+            print(f"{joint_name} (joint {position_jump_joint}) jumped {max_position_delta:.3f} rad in one timestep")
             print(f"(threshold: {self._max_position_jump:.3f} rad)")
             print(f"Current pos: {self.qj[position_jump_joint]:.3f}, Previous: {self._prev_qj[position_jump_joint]:.3f}")
             print("Switching to DAMPED mode for safety.")
             print("=" * 60)
             self.control_mode = "damped"
-            self.hold_target_pose = None
             return False
         
         # Check 2: Velocity spikes
@@ -299,14 +425,14 @@ class Controller:
         velocity_spike_joint = np.argmax(velocity_magnitude)
         
         if max_velocity > self._max_velocity:
+            joint_name = MUJOCO_JOINT_NAMES[velocity_spike_joint]
             print("=" * 60)
             print("SAFETY VIOLATION: VELOCITY SPIKE DETECTED!")
-            print(f"Joint {velocity_spike_joint} velocity: {self.dqj[velocity_spike_joint]:.3f} rad/s")
+            print(f"{joint_name} (joint {velocity_spike_joint}) velocity: {self.dqj[velocity_spike_joint]:.3f} rad/s")
             print(f"(threshold: {self._max_velocity:.3f} rad/s)")
             print("Switching to DAMPED mode for safety.")
             print("=" * 60)
             self.control_mode = "damped"
-            self.hold_target_pose = None
             return False
         
         # Check 3: Acceleration spikes
@@ -315,31 +441,15 @@ class Controller:
         acceleration_spike_joint = np.argmax(np.abs(acceleration))
         
         if max_acceleration > self._max_acceleration:
+            joint_name = MUJOCO_JOINT_NAMES[acceleration_spike_joint]
             print("=" * 60)
             print("SAFETY VIOLATION: ACCELERATION SPIKE DETECTED!")
-            print(f"Joint {acceleration_spike_joint} acceleration: {acceleration[acceleration_spike_joint]:.1f} rad/s^2")
+            print(f"{joint_name} (joint {acceleration_spike_joint}) acceleration: {acceleration[acceleration_spike_joint]:.1f} rad/s^2")
             print(f"(threshold: {self._max_acceleration:.1f} rad/s^2)")
             print(f"Velocity changed from {self._prev_dqj[acceleration_spike_joint]:.3f} to {self.dqj[acceleration_spike_joint]:.3f} rad/s")
             print("Switching to DAMPED mode for safety.")
             print("=" * 60)
             self.control_mode = "damped"
-            self.hold_target_pose = None
-            return False
-        
-        # Check 4: Action output magnitude
-        max_action = np.max(np.abs(pytorch_actions))
-        max_action_joint = np.argmax(np.abs(pytorch_actions))
-        
-        if max_action > self._max_action_magnitude:
-            print("=" * 60)
-            print("SAFETY VIOLATION: ACTION MAGNITUDE TOO LARGE!")
-            print(f"Joint {max_action_joint} action: {pytorch_actions[max_action_joint]:.3f}")
-            print(f"(threshold: {self._max_action_magnitude:.3f})")
-            print("Model may be producing unsafe outputs.")
-            print("Switching to DAMPED mode for safety.")
-            print("=" * 60)
-            self.control_mode = "damped"
-            self.hold_target_pose = None
             return False
         
         # Update previous state for next iteration
@@ -371,35 +481,57 @@ class Controller:
         if not self._system_started:
             return
         
-        # Y: Damped mode
-        if self._rising("Y", self.remote.Y):
-            print("Y pressed: Entering damped mode.")
+        # D-pad: Mode switching with smooth transitions
+        if self._rising("Up", self.remote.Up):
+            print(f"D-PAD UP: Transitioning to DEFAULT POSITION mode ({TRANSITION_TIME_HOLD_POSES}s)")
+            self._start_transition("default_pos", self.default_pos_array, TRANSITION_TIME_HOLD_POSES)
+            
+        if self._rising("Down", self.remote.Down):
+            print(f"D-PAD DOWN: Transitioning to CRAWL POSITION mode ({TRANSITION_TIME_HOLD_POSES}s)")
+            self._start_transition("crawl_pos", self.crawl_angles_array, TRANSITION_TIME_HOLD_POSES)
+            
+        if self._rising("Left", self.remote.Left):
+            # Damped mode: no transition needed, instant switch
             self.control_mode = "damped"
-            self.hold_target_pose = None
-            self._safety_initialized = False  # Reset safety monitoring
-        # X: Neural network control
-        if self._rising("X", self.remote.X):
-            print("X pressed: Entering neural network control mode.")
-            print("Safety monitoring active: position jumps, velocity spikes, acceleration, and action magnitude will be checked.")
+            self._in_transition = False
+            self._safety_initialized = False
+            print(f"D-PAD LEFT: Switched to DAMPED mode")
+            
+        if self._rising("Right", self.remote.Right):
+            # Policy mode: instant switch, no transition
             self.control_mode = "policy"
-            self.hold_target_pose = None
-            self._safety_initialized = False  # Reset safety monitoring for fresh start
-        # A: Lerp to crawl pose and hold
+            self._in_transition = False
+            self._safety_initialized = False
+            print(f"D-PAD RIGHT: Switched to NEURAL NETWORK mode")
+            print(f"  Active policy: [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+            print("  Safety monitoring: position jumps, velocity spikes, and acceleration")
+        
+        # A: Cycle through policies
         if self._rising("A", self.remote.A):
-            print("A pressed: Moving to set pose and holding.")
-            self.set_hold_pose(self.crawl_angles_array, total_time=2.0)
-        # B: Lerp to default pose and hold
-        if self._rising("B", self.remote.B):
-            print("B pressed: Moving to default position and holding.")
-            self.set_hold_pose(self.default_pos_array, total_time=2.0)
+            num_policies = self.policy.get_num_policies()
+            next_idx = self._current_policy_idx + 1
+            
+            if LOOP_POLICIES:
+                # Loop back to first policy after last
+                self._current_policy_idx = next_idx % num_policies
+                self.policy.set_policy_index(self._current_policy_idx)
+                print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+                self._safety_initialized = False
+            else:
+                # Stop at last policy, don't loop back
+                if next_idx < num_policies:
+                    self._current_policy_idx = next_idx
+                    self.policy.set_policy_index(self._current_policy_idx)
+                    print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+                    self._safety_initialized = False
+                else:
+                    print(f"A PRESSED: Already at last policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+                    print("  (Policy looping disabled - set LOOP_POLICIES=True to enable)")
+            
         # F1: LED control
         if self._rising("F1", self.remote.F1):
             print("F1 pressed: Switching LED.")
-            self.audio_client.LedControl(255,0,0)
-
-    def send_cmd(self, cmd: LowCmd_):
-        cmd.crc = CRC().Crc(cmd)
-        self.lowcmd_publisher_.Write(cmd)
+            self.audio_client.LedControl(255, 0, 0)
 
     def zero_torque_state(self):
         print("Enter zero torque state.")
@@ -496,15 +628,15 @@ class Controller:
             if self.remote.Select == 1:
                 print("Select pressed during move: Quitting...")
                 sys.exit(0)
-            if self.remote.Y == 1:
-                print("Y pressed during move: Switching to damped mode.")
+            if self.remote.Left == 1:
+                print("D-pad Left pressed during move: Switching to damped mode.")
                 self.control_mode = "damped"
-                self.hold_target_pose = None
+                self._in_transition = False
                 return
-            if self.remote.X == 1:
-                print("X pressed during move: Switching to neural network mode.")
+            if self.remote.Right == 1:
+                print("D-pad Right pressed during move: Switching to neural network mode.")
                 self.control_mode = "policy"
-                self.hold_target_pose = None
+                self._in_transition = False
                 return
 
             alpha = i / num_step
@@ -577,15 +709,27 @@ class Controller:
         quat = self.low_state.imu_state.quaternion
         gravity = get_gravity_orientation(quat)
         
-        # Get velocity commands from remote sticks (vx, vy, yaw_rate)
-        # Ly: forward speed in [0, 1.5], negatives mapped to 0
-        # Lx: yaw rate in [-1, 1]
-        ly = float(self.remote.Ly)
-        lx = float(self.remote.Lx)
-        ly_norm = np.clip(ly, -1.0, 1.0)
-        forward_speed = max(0.0, ly_norm) * self._max_forward_speed
-        yaw_rate = float(np.clip(lx, -1.0, 1.0))
-        velocity_commands = np.array([forward_speed, 0.0, yaw_rate], dtype=np.float32)
+        # Get velocity commands from remote sticks (lin_vel_z, lin_vel_y, ang_vel_x)
+        # Left stick Y: forward/backward velocity (inverted for intuitive control)
+        # Left stick X: lateral velocity (strafe left/right, inverted for intuitive control)
+        # Right stick X: angular velocity (yaw rotation, inverted for intuitive control)
+        ly = float(self.remote.Ly)  # Forward/backward
+        lx = float(self.remote.Lx)  # Lateral (strafe)
+        rx = float(self.remote.Rx)  # Yaw rotation
+        
+        # Apply deadzone
+        deadzone = 0.1
+        ly = 0.0 if abs(ly) < deadzone else ly
+        lx = 0.0 if abs(lx) < deadzone else lx
+        rx = 0.0 if abs(rx) < deadzone else rx
+        
+        # Clip to [-1, 1] and scale by max velocities
+        # Note: Negating for intuitive control (up=forward, left=left, right=rotate-right)
+        lin_vel_z = -np.clip(ly, -1.0, 1.0) * MAX_LIN_VEL_FORWARD
+        lin_vel_y = -np.clip(lx, -1.0, 1.0) * MAX_LIN_VEL_LATERAL
+        ang_vel_x = -np.clip(rx, -1.0, 1.0) * MAX_ANG_VEL_YAW
+        
+        velocity_commands = np.array([lin_vel_z, lin_vel_y, ang_vel_x], dtype=np.float32)
         
         # Get joint positions and velocities in MuJoCo order, then convert to PyTorch order
         joint_pos_mujoco = self.qj.copy()  # Already relative to default_angles_config
@@ -648,7 +792,8 @@ class Controller:
         if clamped_indices.size > 0:
             print("WARNING: Clamping motor targets for joints:")
             for idx in clamped_indices:
-                print(f"  Joint {idx}: {motor_targets_unclamped[idx]:.3f} -> {motor_targets[idx]:.3f} (limits: [{self._joint_lower_bounds[idx]:.3f}, {self._joint_upper_bounds[idx]:.3f}])")
+                joint_name = MUJOCO_JOINT_NAMES[idx]
+                print(f"  {joint_name}: {motor_targets_unclamped[idx]:.3f} -> {motor_targets[idx]:.3f} (limits: [{self._joint_lower_bounds[idx]:.3f}, {self._joint_upper_bounds[idx]:.3f}])")
 
         # print(f"Kp: {Kp}")
         # print(f"Kd: {Kd}")
@@ -697,18 +842,23 @@ if __name__ == "__main__":
             pass
         sys.exit(0)
 
-    print("Setting up policy...")
-    policy = TorchPolicy(POLICY_PATH)
+    print("Setting up policies...")
+    policy = TorchPolicy(POLICY_PATHS)
     print("WARNING: Please ensure there are no obstacles around the robot while running this example.")
     print("\n" + "=" * 60)
     print("SAFETY: Press START button to enable all controls!")
     print("=" * 60)
     print("\nControls (active ONLY after pressing Start):")
-    print("  A: Move to crawl pose and HOLD")
-    print("  B: Move to DEFAULT pose and HOLD")
-    print("  X: Neural network CONTROL (policy)")
-    print("  Y: DAMPED mode")
+    print("  D-PAD UP: Default position mode")
+    print("  D-PAD DOWN: Crawl position mode")
+    print("  D-PAD LEFT: Damped mode")
+    print("  D-PAD RIGHT: Neural network control mode")
+    print(f"  A: Cycle through loaded policies ({'loops' if LOOP_POLICIES else 'stops at last'})")
     print("  F1: RED LED")
+    print("\nVelocity commands (in neural network mode):")
+    print(f"  Left stick Y: Forward/backward (±{MAX_LIN_VEL_FORWARD} m/s)")
+    print(f"  Left stick X: Strafe left/right (±{MAX_LIN_VEL_LATERAL} m/s)")
+    print(f"  Right stick X: Rotate/yaw (±{MAX_ANG_VEL_YAW} rad/s)")
     print("\nAlways active:")
     print("  Start: ENABLE system (press this first!)")
     print("  Select: QUIT immediately")
@@ -717,8 +867,8 @@ if __name__ == "__main__":
     print("  - Position jump detection: Max 0.3 rad/timestep (15 rad/s)")
     print("  - Velocity spike detection: Max 25.0 rad/s")
     print("  - Acceleration spike detection: Max 1500 rad/s^2")
-    print("  - Action magnitude limit: Max 5.0")
     print("  - Auto-damped mode on any safety violation")
+    print(f"\nMotor commands: {'ENABLED' if ENABLE_MOTOR_COMMANDS else 'DISABLED (test mode)'}")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
@@ -727,21 +877,23 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Controller ready. Press START to begin!")
     print("=" * 60)
-    print("\n[DEBUG MODE ENABLED] Printing low_state info every second...")
-    print("Watch for changes when you turn off the remote controller.\n")
     while True:
-        # Print debug state periodically
-        # controller.print_debug_state()
-        
         # Check remote heartbeat first (safety check)
         controller.check_remote_heartbeat()
         
         controller.process_global_buttons()
 
-        if controller.control_mode == "policy":
+        # Handle transitions first - they override normal mode behavior
+        if controller._in_transition:
+            controller._execute_transition_step()
+            time.sleep(controller.control_dt)
+        elif controller.control_mode == "policy":
             controller.run()
-        elif controller.control_mode == "hold":
-            controller._send_hold_command()
+        elif controller.control_mode == "default_pos":
+            controller.send_default_pos_command()
+            time.sleep(controller.control_dt)
+        elif controller.control_mode == "crawl_pos":
+            controller.send_crawl_pos_command()
             time.sleep(controller.control_dt)
         else:  # "damped" or any unknown -> default to damped
             create_damping_cmd(controller.low_cmd)

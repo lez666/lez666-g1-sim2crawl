@@ -54,22 +54,29 @@ CONFIG = {
     "use_gamepad": True,
     
     # Max forward/backward velocity (m/s) - scaled by left stick Y
-    "max_lin_vel": 2.0,
+    "max_lin_vel": 1.5,
+    
+    # Max lateral velocity (m/s) - scaled by left stick X
+    "max_lat_vel": 1.5,
     
     # Max angular velocity (rad/s) - scaled by right stick X  
     "max_ang_vel": 1.5,
     
-    # Gamepad face button to policy mapping
     # Buttons: 0=A (bottom), 1=B (right), 2=X (left), 3=Y (top)
-    "button_policy_map": {
-        0: "policies/policy_crawl.pt",      # A button
-        1: "policies/policy_shamble.pt",    # B button
-        2: "policies/policy_shamble_start.pt", # X button
-        3: "policies/policy.pt", # Y button # CRAWL START
-    },
+    # Option 1 (recommended): Use a single button to cycle through policies in order
+    "policy_cycle": [
+        "policies/policy_shamble.pt",
+        "policies/policy_crawl_start.pt",
+        "policies/policy_crawl.pt",
+        "policies/policy_shamble_start.pt",
+    ],
+    "cycle_button": 0,  # A button
     
     # Exit button (9 = Start/Menu button on most controllers)
-    "exit_button": 9,
+    "exit_button": 6,
+    
+    # Debug mode - prints all button/axis events
+    "gamepad_debug": True,
     
     # === CAMERA SETTINGS ===
     
@@ -133,17 +140,78 @@ TRAINING_DEFAULT_ANGLES = {
     "right_wrist_roll_joint": 0.0,
 }
 
+# Joint limits (min, max) in MuJoCo joint order - matching RESTRICTED_JOINT_RANGE from deploy_real.py
+JOINT_LIMITS = {
+    "left_hip_pitch_joint": (-2.5307, 2.8798),
+    "left_hip_roll_joint": (-0.5236, 2.9671),
+    "left_hip_yaw_joint": (-2.7576, 2.7576),
+    "left_knee_joint": (-0.087267, 2.8798),
+    "left_ankle_pitch_joint": (-0.87267, 0.5236),
+    "left_ankle_roll_joint": (-0.2618, 0.2618),
+    "right_hip_pitch_joint": (-2.5307, 2.8798),
+    "right_hip_roll_joint": (-2.9671, 0.5236),
+    "right_hip_yaw_joint": (-2.7576, 2.7576),
+    "right_knee_joint": (-0.087267, 2.8798),
+    "right_ankle_pitch_joint": (-0.87267, 0.5236),
+    "right_ankle_roll_joint": (-0.2618, 0.2618),
+    "waist_yaw_joint": (-2.618, 2.618),
+    "left_shoulder_pitch_joint": (-3.0892, 2.6704),
+    "left_shoulder_roll_joint": (-1.5882, 2.2515),
+    "left_shoulder_yaw_joint": (-2.618, 2.618),
+    "left_elbow_joint": (-1.0472, 2.0944),
+    "left_wrist_roll_joint": (-1.97222, 1.97222),
+    "right_shoulder_pitch_joint": (-3.0892, 2.6704),
+    "right_shoulder_roll_joint": (-2.2515, 1.5882),
+    "right_shoulder_yaw_joint": (-2.618, 2.618),
+    "right_elbow_joint": (-1.0472, 2.0944),
+    "right_wrist_roll_joint": (-1.97222, 1.97222),
+}
+
 
 class GamepadController:
     """Gamepad input handler using GLFW."""
     
-    def __init__(self, button_policy_map: dict[int, str], max_lin_vel: float, max_ang_vel: float, exit_button: int = 9):
-        self.button_policy_map = button_policy_map
+    def __init__(
+        self,
+        button_policy_map: dict[int, str],
+        max_lin_vel: float,
+        max_lat_vel: float,
+        max_ang_vel: float,
+        exit_button: int = 9,
+        debug: bool = False,
+        policy_cycle: list[str] | None = None,
+        cycle_button: int | None = None,
+        initial_policy_path: str | None = None,
+    ):
+        # Mode configuration
+        self.button_policy_map = button_policy_map or {}
+        self.policy_cycle = list(policy_cycle) if policy_cycle else []
+        self.cycle_button = cycle_button
+        if self.policy_cycle and self.cycle_button is not None:
+            self._mode = "cycle"
+        elif self.button_policy_map:
+            self._mode = "map"
+        else:
+            raise ValueError("GamepadController requires either a non-empty policy_cycle+cycle_button or a non-empty button_policy_map")
+        
         self.max_lin_vel = max_lin_vel
+        self.max_lat_vel = max_lat_vel
         self.max_ang_vel = max_ang_vel
         self.exit_button = exit_button
+        self.debug = debug
         self.joystick_id = glfw.JOYSTICK_1
         self.last_button_state = [0] * 16  # Track button states for edge detection
+        
+        # Cycle state
+        self._cycle_index = 0
+        if self._mode == "cycle" and initial_policy_path is not None:
+            # Align cycle index with initial policy if present
+            try:
+                self._cycle_index = self.policy_cycle.index(initial_policy_path)
+            except ValueError:
+                # Not found; start at 0, fail loudly in debug
+                if self.debug:
+                    print(f"[GAMEPAD DEBUG] Initial policy not in policy_cycle: {initial_policy_path}")
         
         # Initialize GLFW
         if not glfw.init():
@@ -162,46 +230,66 @@ class GamepadController:
         else:
             print("[GAMEPAD] Warning: Not a standard gamepad mapping")
         
-        # Print button mapping
-        print("\n[GAMEPAD] Face Button -> Policy Mapping:")
-        button_names = {0: "A (bottom)", 1: "B (right)", 2: "X (left)", 3: "Y (top)"}
-        for btn_id, policy_path in sorted(self.button_policy_map.items()):
-            btn_name = button_names.get(btn_id, f"Button {btn_id}")
-            policy_name = Path(policy_path).stem
-            print(f"  {btn_name:12} -> {policy_name}")
+        # Print control mapping
+        print()
+        if self._mode == "cycle":
+            print("[GAMEPAD] Face Button -> Cycle Policies:")
+            button_names = {0: "A (bottom)", 1: "B (right)", 2: "X (left)", 3: "Y (top)"}
+            btn_name = button_names.get(self.cycle_button, f"Button {self.cycle_button}")
+            print(f"  {btn_name:12} -> cycles through {len(self.policy_cycle)} policies")
+            for idx, policy_path in enumerate(self.policy_cycle):
+                policy_name = Path(policy_path).stem
+                marker = "<- start" if idx == self._cycle_index else ""
+                print(f"    [{idx}] {policy_name} {marker}")
+        else:
+            print("[GAMEPAD] Face Button -> Policy Mapping:")
+            button_names = {0: "X (bottom)", 1: "Circle (right)", 2: "Square (left)", 3: "Triangle (top)"}
+            for btn_id, policy_path in sorted(self.button_policy_map.items()):
+                btn_name = button_names.get(btn_id, f"Button {btn_id}")
+                policy_name = Path(policy_path).stem
+                print(f"  {btn_name:12} -> {policy_name}")
         
         exit_button_names = {8: "Select/Back", 9: "Start/Menu"}
         exit_btn_name = exit_button_names.get(self.exit_button, f"Button {self.exit_button}")
         print(f"\n[GAMEPAD] Exit Button: {exit_btn_name}")
+        
+        if self.debug:
+            print("[GAMEPAD] Debug mode ENABLED - will print all button presses")
         print()
     
-    def get_velocity_commands(self) -> tuple[float, float]:
+    def get_velocity_commands(self) -> tuple[float, float, float]:
         """Get velocity commands from analog sticks.
         
         Returns:
-            (lin_vel_z, ang_vel_x): Forward velocity and angular velocity
+            (lin_vel_z, lin_vel_y, ang_vel_x): Forward velocity, lateral velocity, and angular velocity
         """
         state = glfw.get_gamepad_state(self.joystick_id)
         if not state:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         
         # Left stick Y (inverted) for forward/backward
         # Stick axes are -1 (up) to 1 (down), so negate for intuitive control
         left_y = -state.axes[1] if len(state.axes) > 1 else 0.0
         lin_vel_z = left_y * self.max_lin_vel
         
-        # Right stick X for rotation
-        right_x = state.axes[2] if len(state.axes) > 2 else 0.0
+        # Left stick X for lateral movement (strafe left/right) - negated for intuitive control
+        left_x = -state.axes[0] if len(state.axes) > 0 else 0.0
+        lin_vel_y = left_x * self.max_lat_vel
+        
+        # Right stick X for rotation - negated for intuitive control
+        right_x = -state.axes[2] if len(state.axes) > 2 else 0.0
         ang_vel_x = right_x * self.max_ang_vel
         
         # Apply deadzone
         deadzone = 0.1
         if abs(lin_vel_z) < deadzone:
             lin_vel_z = 0.0
+        if abs(lin_vel_y) < deadzone:
+            lin_vel_y = 0.0
         if abs(ang_vel_x) < deadzone:
             ang_vel_x = 0.0
         
-        return lin_vel_z, ang_vel_x
+        return lin_vel_z, lin_vel_y, ang_vel_x
     
     def check_policy_switch(self) -> str | None:
         """Check if a face button was pressed to switch policy.
@@ -213,17 +301,38 @@ class GamepadController:
         if not state:
             return None
         
-        # Check each mapped button for rising edge (0->1)
-        for btn_id, policy_path in self.button_policy_map.items():
-            if btn_id < len(state.buttons):
+        if self._mode == "cycle":
+            btn_id = self.cycle_button if self.cycle_button is not None else -1
+            if 0 <= btn_id < len(state.buttons):
                 current = state.buttons[btn_id]
                 previous = self.last_button_state[btn_id]
-                
-                if current == 1 and previous == 0:  # Button just pressed
+                if current == 1 and previous == 0:
+                    # Advance cycle index and return next policy
+                    self._cycle_index = (self._cycle_index + 1) % len(self.policy_cycle)
+                    next_policy = self.policy_cycle[self._cycle_index]
                     self.last_button_state[btn_id] = current
-                    return policy_path
-                
+                    if self.debug:
+                        btn_names = {0: "A", 1: "B", 2: "X", 3: "Y"}
+                        btn_name = btn_names.get(btn_id, f"Button {btn_id}")
+                        print(f"[GAMEPAD DEBUG] Button {btn_id} ({btn_name}) pressed -> cycling to [{self._cycle_index}] {Path(next_policy).stem}")
+                    return next_policy
                 self.last_button_state[btn_id] = current
+        else:
+            # Check each mapped button for rising edge (0->1)
+            for btn_id, policy_path in self.button_policy_map.items():
+                if btn_id < len(state.buttons):
+                    current = state.buttons[btn_id]
+                    previous = self.last_button_state[btn_id]
+                    
+                    if current == 1 and previous == 0:  # Button just pressed
+                        self.last_button_state[btn_id] = current
+                        if self.debug:
+                            btn_names = {0: "A", 1: "B", 2: "X", 3: "Y"}
+                            btn_name = btn_names.get(btn_id, f"Button {btn_id}")
+                            print(f"[GAMEPAD DEBUG] Button {btn_id} ({btn_name}) pressed -> switching policy")
+                        return policy_path
+                    
+                    self.last_button_state[btn_id] = current
         
         return None
     
@@ -244,6 +353,8 @@ class GamepadController:
             
             if current == 1 and previous == 0:  # Button just pressed
                 self.last_button_state[self.exit_button] = current
+                if self.debug:
+                    print(f"[GAMEPAD DEBUG] Button {self.exit_button} (Exit) pressed")
                 print("\n[GAMEPAD] Exit button pressed - shutting down...")
                 return True
             
@@ -251,9 +362,66 @@ class GamepadController:
         
         return False
     
-    def cleanup(self):
-        """Clean up GLFW resources."""
-        glfw.terminate()
+    def print_debug_info(self):
+        """Print debug information about button and axis states (if debug enabled).
+        
+        This should be called BEFORE check_policy_switch and check_exit to catch all buttons.
+        """
+        if not self.debug:
+            return
+        
+        state = glfw.get_gamepad_state(self.joystick_id)
+        if not state:
+            return
+        
+        # Check for button presses (rising edges)
+        for btn_id in range(min(len(state.buttons), len(self.last_button_state))):
+            current = state.buttons[btn_id]
+            previous = self.last_button_state[btn_id]
+            
+            if current == 1 and previous == 0:  # Button just pressed
+                # Skip buttons that are handled by other methods (they print their own debug)
+                if btn_id in self.button_policy_map or (self.cycle_button is not None and btn_id == self.cycle_button) or btn_id == self.exit_button:
+                    continue
+                    
+                # Try to identify the button
+                btn_names = {
+                    0: "A (bottom/cross)", 
+                    1: "B (right/circle)", 
+                    2: "X (left/square)", 
+                    3: "Y (top/triangle)",
+                    4: "LB (left bumper)",
+                    5: "RB (right bumper)",
+                    6: "LT (left trigger)",
+                    7: "RT (right trigger)",
+                    8: "Select/Back",
+                    9: "Start/Menu",
+                    10: "L3 (left stick click)",
+                    11: "R3 (right stick click)",
+                    12: "D-pad Up",
+                    13: "D-pad Down",
+                    14: "D-pad Left",
+                    15: "D-pad Right",
+                }
+                btn_name = btn_names.get(btn_id, f"Unknown")
+                print(f"[GAMEPAD DEBUG] Button {btn_id} pressed ({btn_name}) [unmapped]")
+            
+            # Update state for this method's tracking (don't interfere with other methods)
+            self.last_button_state[btn_id] = current
+    
+    def cleanup(self, terminate_glfw: bool = True):
+        """Clean up GLFW resources.
+        
+        Args:
+            terminate_glfw: If True, call glfw.terminate(). Set to False if GLFW
+                          is still in use by other components (e.g., MuJoCo viewer).
+        """
+        if terminate_glfw:
+            try:
+                glfw.terminate()
+            except Exception:
+                # Suppress OpenGL context errors during cleanup (harmless)
+                pass
 
 
 def rpy_to_quat(roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -338,8 +506,36 @@ class StandalonePolicyController:
         self.default_joint_pos_mujoco = torch.tensor(default_pos_mujoco, device=device, dtype=torch.float32)
         self.default_joint_pos_pytorch = self._remap_mujoco_to_pytorch(self.default_joint_pos_mujoco)
         
+        # Get joint limits
+        joint_limits_lower = []
+        joint_limits_upper = []
+        for joint_name in self.joint_names:
+            if joint_name in JOINT_LIMITS:
+                limits = JOINT_LIMITS[joint_name]
+                joint_limits_lower.append(limits[0])
+                joint_limits_upper.append(limits[1])
+            else:
+                print(f"[WARN] Joint {joint_name} not in JOINT_LIMITS, using [-π, π]")
+                joint_limits_lower.append(-np.pi)
+                joint_limits_upper.append(np.pi)
+        
+        self.joint_limits_lower = torch.tensor(joint_limits_lower, device=device, dtype=torch.float32)
+        self.joint_limits_upper = torch.tensor(joint_limits_upper, device=device, dtype=torch.float32)
+        
         # Initialize last actions
         self.last_actions_pytorch = torch.zeros(self.num_policy_joints, device=device, dtype=torch.float32)
+        
+        # Safety monitoring (matching deploy_real.py thresholds)
+        self._prev_joint_pos = None
+        self._prev_joint_vel = None
+        self._safety_initialized = False
+        self._control_dt = 0.02  # 50 Hz control rate
+        
+        # Safety thresholds (from deploy_real.py)
+        self._max_position_jump = 0.3  # rad per timestep (15 rad/s at 20ms)
+        self._max_velocity = 25.0  # rad/s
+        self._max_acceleration = 1500.0  # rad/s^2
+        self._max_action_magnitude = 5.0  # Action output limit
         
         # Load policy
         print(f"[INFO] Loading policy from: {policy_path}")
@@ -360,6 +556,11 @@ class StandalonePolicyController:
         
         # Reset last actions to avoid discontinuities
         self.last_actions_pytorch = torch.zeros(self.num_policy_joints, device=self.device, dtype=torch.float32)
+        
+        # Reset safety monitoring to avoid false positives from policy switch
+        self._safety_initialized = False
+        self._prev_joint_pos = None
+        self._prev_joint_vel = None
     
     def _remap_mujoco_to_pytorch(self, mujoco_data: torch.Tensor) -> torch.Tensor:
         """Remap joint data from MuJoCo order to PyTorch order."""
@@ -384,6 +585,7 @@ class StandalonePolicyController:
         joint_pos: np.ndarray,
         joint_vel: np.ndarray,
         lin_vel_z: float,
+        lin_vel_y: float,
         ang_vel_x: float,
     ) -> torch.Tensor:
         """Build observation tensor matching training format."""
@@ -393,7 +595,7 @@ class StandalonePolicyController:
         joint_vel_t = torch.from_numpy(joint_vel).to(self.device)
         
         velocity_commands = torch.tensor(
-            [lin_vel_z, 0.0, ang_vel_x],
+            [lin_vel_z, lin_vel_y, ang_vel_x],
             device=self.device,
             dtype=torch.float32
         )
@@ -416,18 +618,105 @@ class StandalonePolicyController:
         
         return obs  # (75,)
     
-    def get_action(self, obs: torch.Tensor) -> np.ndarray:
-        """Run policy to get actions."""
+    def check_safety_limits(self, joint_pos: np.ndarray, joint_vel: np.ndarray, pytorch_actions: torch.Tensor) -> bool:
+        """
+        Check if current state violates safety limits (matching deploy_real.py thresholds).
+        Prints LOUD warnings but doesn't stop simulation (just warns).
+        
+        Returns True if safe, False if safety violation detected.
+        """
+        if not self._safety_initialized:
+            # First iteration - just store current state
+            self._prev_joint_pos = joint_pos.copy()
+            self._prev_joint_vel = joint_vel.copy()
+            self._safety_initialized = True
+            return True
+        
+        # Check 1: Position jumps
+        position_delta = np.abs(joint_pos - self._prev_joint_pos)
+        max_position_delta = np.max(position_delta)
+        position_jump_joint = np.argmax(position_delta)
+        
+        if max_position_delta > self._max_position_jump:
+            joint_name = self.joint_names[position_jump_joint]
+            print("\n" + "=" * 60)
+            print("⚠️  SAFETY VIOLATION: POSITION JUMP DETECTED! ⚠️")
+            print("=" * 60)
+            print(f"{joint_name} (joint {position_jump_joint}) jumped {max_position_delta:.3f} rad in one timestep")
+            print(f"(threshold: {self._max_position_jump:.3f} rad)")
+            print(f"Current pos: {joint_pos[position_jump_joint]:.3f}, Previous: {self._prev_joint_pos[position_jump_joint]:.3f}")
+            print("⚠️  THIS WOULD TRIGGER DAMPED MODE ON REAL ROBOT! ⚠️")
+            print("=" * 60 + "\n")
+        
+        # Check 2: Velocity spikes
+        velocity_magnitude = np.abs(joint_vel)
+        max_velocity = np.max(velocity_magnitude)
+        velocity_spike_joint = np.argmax(velocity_magnitude)
+        
+        if max_velocity > self._max_velocity:
+            joint_name = self.joint_names[velocity_spike_joint]
+            print("\n" + "=" * 60)
+            print("⚠️  SAFETY VIOLATION: VELOCITY SPIKE DETECTED! ⚠️")
+            print("=" * 60)
+            print(f"{joint_name} (joint {velocity_spike_joint}) velocity: {joint_vel[velocity_spike_joint]:.3f} rad/s")
+            print(f"(threshold: {self._max_velocity:.3f} rad/s)")
+            print("⚠️  THIS WOULD TRIGGER DAMPED MODE ON REAL ROBOT! ⚠️")
+            print("=" * 60 + "\n")
+        
+        # Check 3: Acceleration spikes
+        acceleration = (joint_vel - self._prev_joint_vel) / self._control_dt
+        max_acceleration = np.max(np.abs(acceleration))
+        acceleration_spike_joint = np.argmax(np.abs(acceleration))
+        
+        if max_acceleration > self._max_acceleration:
+            joint_name = self.joint_names[acceleration_spike_joint]
+            print("\n" + "=" * 60)
+            print("⚠️  SAFETY VIOLATION: ACCELERATION SPIKE DETECTED! ⚠️")
+            print("=" * 60)
+            print(f"{joint_name} (joint {acceleration_spike_joint}) acceleration: {acceleration[acceleration_spike_joint]:.1f} rad/s^2")
+            print(f"(threshold: {self._max_acceleration:.1f} rad/s^2)")
+            print(f"Velocity changed from {self._prev_joint_vel[acceleration_spike_joint]:.3f} to {joint_vel[acceleration_spike_joint]:.3f} rad/s")
+            print("⚠️  THIS WOULD TRIGGER DAMPED MODE ON REAL ROBOT! ⚠️")
+            print("=" * 60 + "\n")
+        
+        # Update previous state for next iteration
+        self._prev_joint_pos = joint_pos.copy()
+        self._prev_joint_vel = joint_vel.copy()
+        
+        # Return True even if violations found (just warn, don't stop sim)
+        return True
+    
+    def get_action(self, obs: torch.Tensor, joint_pos: np.ndarray, joint_vel: np.ndarray) -> np.ndarray:
+        """Run policy to get actions and check safety limits."""
         with torch.no_grad():
             actions_pytorch = self._policy(obs)
+        
+        # Safety check before applying actions
+        self.check_safety_limits(joint_pos, joint_vel, actions_pytorch)
         
         self.last_actions_pytorch = actions_pytorch.clone()
         
         # Convert to MuJoCo order
         actions_mujoco = self._remap_pytorch_to_mujoco(actions_pytorch)
         
-        # Apply to joint targets
-        targets = actions_mujoco * self.action_scale + self.default_joint_pos_mujoco
+        # Apply to joint targets (unclamped)
+        targets_unclamped = actions_mujoco * self.action_scale + self.default_joint_pos_mujoco
+        
+        # Clamp to joint limits
+        targets = torch.clamp(targets_unclamped, self.joint_limits_lower, self.joint_limits_upper)
+        
+        # Check for clamping and warn
+        clamped_mask = (targets != targets_unclamped)
+        if clamped_mask.any():
+            clamped_indices = torch.where(clamped_mask)[0].cpu().numpy()
+            print("WARNING: Clamping motor targets for joints:")
+            for idx in clamped_indices:
+                joint_name = self.joint_names[idx]
+                unclamped_val = targets_unclamped[idx].item()
+                clamped_val = targets[idx].item()
+                lower_limit = self.joint_limits_lower[idx].item()
+                upper_limit = self.joint_limits_upper[idx].item()
+                print(f"  {joint_name}: {unclamped_val:.3f} -> {clamped_val:.3f} (limits: [{lower_limit:.3f}, {upper_limit:.3f}])")
         
         return targets.cpu().numpy()
 
@@ -477,9 +766,13 @@ def main():
     
     use_gamepad = CONFIG["use_gamepad"]
     max_lin_vel = CONFIG.get("max_lin_vel", 2.0)
+    max_lat_vel = CONFIG.get("max_lat_vel", 1.5)
     max_ang_vel = CONFIG.get("max_ang_vel", 1.5)
     button_policy_map = CONFIG.get("button_policy_map", {})
+    policy_cycle = CONFIG.get("policy_cycle", None)
+    cycle_button = CONFIG.get("cycle_button", None)
     exit_button = CONFIG.get("exit_button", 9)
+    gamepad_debug = CONFIG.get("gamepad_debug", False)
     
     # Camera settings
     camera_distance = CONFIG.get("camera_distance", 3.0)
@@ -519,8 +812,13 @@ def main():
             gamepad = GamepadController(
                 button_policy_map=button_policy_map,
                 max_lin_vel=max_lin_vel,
+                max_lat_vel=max_lat_vel,
                 max_ang_vel=max_ang_vel,
-                exit_button=exit_button
+                exit_button=exit_button,
+                debug=gamepad_debug,
+                policy_cycle=policy_cycle,
+                cycle_button=cycle_button,
+                initial_policy_path=str(policy_path),
             )
             print("[INFO] Gamepad initialized - using analog sticks for control")
         except RuntimeError as e:
@@ -540,85 +838,100 @@ def main():
     
     # Launch viewer
     print("[INFO] Launching viewer...")
-    try:
-        with viewer.launch_passive(
-            model=mj_model,
-            data=data,
-            show_left_ui=False,
-            show_right_ui=False
-        ) as v:
-            # Set camera from config
-            v.cam.distance = camera_distance
-            v.cam.azimuth = camera_azimuth
-            v.cam.elevation = camera_elevation
+    print("\n" + "=" * 60)
+    print("SAFETY MONITORING ENABLED")
+    print("=" * 60)
+    print("Real robot safety thresholds are active:")
+    print(f"  - Position jump: Max {controller._max_position_jump:.2f} rad/timestep")
+    print(f"  - Velocity spike: Max {controller._max_velocity:.1f} rad/s")
+    print(f"  - Acceleration spike: Max {controller._max_acceleration:.1f} rad/s²")
+    print("\nLOUD warnings will appear if policy would trigger safety shutoff!")
+    print("=" * 60 + "\n")
+    
+    with viewer.launch_passive(
+        model=mj_model,
+        data=data,
+        show_left_ui=False,
+        show_right_ui=False
+    ) as v:
+        # Set camera from config
+        v.cam.distance = camera_distance
+        v.cam.azimuth = camera_azimuth
+        v.cam.elevation = camera_elevation
+        
+        print("[INFO] Viewer launched. Running policy...")
+        print(f"[INFO] Camera: distance={camera_distance}m, azimuth={camera_azimuth}°, tracking={camera_tracking}")
+        if not use_gamepad:
+            print("[INFO] No gamepad - robot will stand still")
+        
+        step = 0
+        lin_vel_z = 0.0
+        lin_vel_y = 0.0
+        ang_vel_x = 0.0
+        
+        while v.is_running():
+            # Get velocity commands from gamepad
+            if gamepad:
+                lin_vel_z, lin_vel_y, ang_vel_x = gamepad.get_velocity_commands()
+                
+                # Print debug info (catches unmapped buttons)
+                gamepad.print_debug_info()
+                
+                # Check for policy switch
+                new_policy_path = gamepad.check_policy_switch()
+                if new_policy_path:
+                    controller.load_policy(Path(new_policy_path))
+                
+                # Check for exit button
+                if gamepad.check_exit():
+                    # Don't terminate GLFW yet - viewer is still using it
+                    # Just mark gamepad as done and break
+                    break
             
-            print("[INFO] Viewer launched. Running policy...")
-            print(f"[INFO] Camera: distance={camera_distance}m, azimuth={camera_azimuth}°, tracking={camera_tracking}")
-            if not use_gamepad:
-                print("[INFO] No gamepad - robot will stand still")
+            # Get robot state
+            root_quat = data.qpos[3:7]
+            joint_pos = data.qpos[7:7+controller.num_robot_joints]
+            joint_vel = data.qvel[6:6+controller.num_robot_joints]  # Skip free joint velocities
             
-            step = 0
-            lin_vel_z = 0.0
-            ang_vel_x = 0.0
+            # Compute projected gravity
+            proj_gravity = compute_projected_gravity(root_quat)
             
-            while v.is_running():
-                # Get velocity commands from gamepad
-                if gamepad:
-                    lin_vel_z, ang_vel_x = gamepad.get_velocity_commands()
-                    
-                    # Check for policy switch
-                    new_policy_path = gamepad.check_policy_switch()
-                    if new_policy_path:
-                        controller.load_policy(Path(new_policy_path))
-                    
-                    # Check for exit button
-                    if gamepad.check_exit():
-                        break
-                
-                # Get robot state
-                root_quat = data.qpos[3:7]
-                joint_pos = data.qpos[7:7+controller.num_robot_joints]
-                joint_vel = data.qvel[6:6+controller.num_robot_joints]  # Skip free joint velocities
-                
-                # Compute projected gravity
-                proj_gravity = compute_projected_gravity(root_quat)
-                
-                # Get observation
-                obs = controller.get_observation(
-                    projected_gravity=proj_gravity,
-                    joint_pos=joint_pos,
-                    joint_vel=joint_vel,
-                    lin_vel_z=lin_vel_z,
-                    ang_vel_x=ang_vel_x,
-                )
-                
-                # Get action from policy (every n_substeps)
-                if step % n_substeps == 0:
-                    joint_targets = controller.get_action(obs)
-                    data.ctrl[:controller.num_robot_joints] = joint_targets
-                
-                # Step simulation
-                mujoco.mj_step(mj_model, data)
-                step += 1
-                
-                # Update camera to track robot (if enabled)
-                if camera_tracking and step % 10 == 0:  # Update every 10 steps for smoothness
-                    root_pos = data.qpos[0:3]
-                    v.cam.lookat[:] = root_pos  # Camera follows robot position
-                
-                # Sync viewer
-                if step % 2 == 0:
-                    v.sync()
-                
-                # Print status
-                # if step % 500 == 0:
-                #     root_pos = data.qpos[0:3]
-                #     vel_str = f"vel=[{lin_vel_z:.2f}, {ang_vel_x:.2f}]" if use_gamepad else ""
-                #     print(f"Step {step}: pos=[{root_pos[0]:.2f}, {root_pos[1]:.2f}, {root_pos[2]:.2f}] {vel_str}")
-    finally:
-        # Cleanup gamepad
-        if gamepad:
-            gamepad.cleanup()
+            # Get observation
+            obs = controller.get_observation(
+                projected_gravity=proj_gravity,
+                joint_pos=joint_pos,
+                joint_vel=joint_vel,
+                lin_vel_z=lin_vel_z,
+                lin_vel_y=lin_vel_y,
+                ang_vel_x=ang_vel_x,
+            )
+            
+            # Get action from policy (every n_substeps)
+            if step % n_substeps == 0:
+                joint_targets = controller.get_action(obs, joint_pos, joint_vel)
+                data.ctrl[:controller.num_robot_joints] = joint_targets
+            
+            # Step simulation
+            mujoco.mj_step(mj_model, data)
+            step += 1
+            
+            # Update camera to track robot (if enabled)
+            if camera_tracking and step % 10 == 0:  # Update every 10 steps for smoothness
+                root_pos = data.qpos[0:3]
+                v.cam.lookat[:] = root_pos  # Camera follows robot position
+            
+            # Sync viewer
+            if step % 2 == 0:
+                v.sync()
+            
+            # Print status
+            # if step % 500 == 0:
+            #     root_pos = data.qpos[0:3]
+            #     vel_str = f"vel=[{lin_vel_z:.2f}, {ang_vel_x:.2f}]" if use_gamepad else ""
+            #     print(f"Step {step}: pos=[{root_pos[0]:.2f}, {root_pos[1]:.2f}, {root_pos[2]:.2f}] {vel_str}")
+    
+    # Don't need to explicitly cleanup gamepad - GLFW is shared with viewer
+    # and will be cleaned up automatically when the process exits
     
     print("[INFO] Deployment finished.")
 

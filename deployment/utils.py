@@ -159,6 +159,34 @@ class G1MjxJointIndex:
     # RightWristPitch, and RightWristYaw compared to the original G1JointIndex.
 
 
+# Joint names in MuJoCo order (G1MjxJointIndex order)
+MUJOCO_JOINT_NAMES = [
+    "LeftHipPitch",
+    "LeftHipRoll",
+    "LeftHipYaw",
+    "LeftKnee",
+    "LeftAnklePitch",
+    "LeftAnkleRoll",
+    "RightHipPitch",
+    "RightHipRoll",
+    "RightHipYaw",
+    "RightKnee",
+    "RightAnklePitch",
+    "RightAnkleRoll",
+    "WaistYaw",
+    "LeftShoulderPitch",
+    "LeftShoulderRoll",
+    "LeftShoulderYaw",
+    "LeftElbow",
+    "LeftWristRoll",
+    "RightShoulderPitch",
+    "RightShoulderRoll",
+    "RightShoulderYaw",
+    "RightElbow",
+    "RightWristRoll",
+]
+
+
 class G1PyTorchJointIndex:
     """Joint indices based on the order in your PyTorch model."""
     # Actual joint order from PyTorch training:

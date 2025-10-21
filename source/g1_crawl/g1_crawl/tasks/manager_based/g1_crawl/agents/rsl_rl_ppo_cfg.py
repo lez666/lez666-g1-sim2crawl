@@ -13,9 +13,9 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 2000
     save_interval = 250
-    experiment_name = "g1_crawl_stand_fromwarmup"
+    experiment_name = "g1_stand"
     empirical_normalization = False
-    clip_actions = 10.0
+    clip_actions = 5.0
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[256, 128, 128],
