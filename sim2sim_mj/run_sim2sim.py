@@ -78,6 +78,11 @@ CONFIG = {
     # Debug mode - prints all button/axis events
     "gamepad_debug": True,
     
+    # Preferred gamepad selection (optional)
+    # Use a name substring (e.g., "DualSense", "Xbox") or 1-based index
+    "gamepad_preferred_name": None,
+    "gamepad_preferred_index": 2,
+    
     # === CAMERA SETTINGS ===
     
     # Camera distance from robot (meters)
@@ -182,6 +187,8 @@ class GamepadController:
         policy_cycle: list[str] | None = None,
         cycle_button: int | None = None,
         initial_policy_path: str | None = None,
+        preferred_name: str | None = None,
+        preferred_index_1based: int | None = None,
     ):
         # Mode configuration
         self.button_policy_map = button_policy_map or {}
@@ -199,7 +206,8 @@ class GamepadController:
         self.max_ang_vel = max_ang_vel
         self.exit_button = exit_button
         self.debug = debug
-        self.joystick_id = glfw.JOYSTICK_1
+        # Select joystick
+        self.joystick_id = self._select_joystick(preferred_name, preferred_index_1based)
         self.last_button_state = [0] * 16  # Track button states for edge detection
         
         # Cycle state
@@ -256,6 +264,59 @@ class GamepadController:
         if self.debug:
             print("[GAMEPAD] Debug mode ENABLED - will print all button presses")
         print()
+
+    @staticmethod
+    def _to_str_name(name_obj) -> str:
+        try:
+            if isinstance(name_obj, (bytes, bytearray)):
+                return name_obj.decode(errors="ignore")
+            return str(name_obj)
+        except Exception:
+            return str(name_obj)
+
+    @classmethod
+    def _enumerate_devices(cls) -> list[tuple[int, str, bool]]:
+        first = getattr(glfw, "JOYSTICK_1", 0)
+        last = getattr(glfw, "JOYSTICK_LAST", 15)
+        devices: list[tuple[int, str, bool]] = []
+        for jid in range(first, last + 1):
+            if glfw.joystick_present(jid):
+                name = cls._to_str_name(glfw.get_joystick_name(jid))
+                is_gamepad = bool(glfw.joystick_is_gamepad(jid))
+                devices.append((jid, name, is_gamepad))
+        return devices
+
+    @classmethod
+    def _select_joystick(cls, preferred_name: str | None, preferred_index_1based: int | None) -> int:
+        devices = cls._enumerate_devices()
+        if not devices:
+            raise RuntimeError("No joysticks detected via GLFW")
+
+        # Prefer exact/substring name match with standard mapping
+        if preferred_name:
+            substr = preferred_name.lower()
+            for jid, name, is_gp in devices:
+                if not is_gp:
+                    continue
+                mapping = cls._to_str_name(glfw.get_gamepad_name(jid))
+                if substr in name.lower() or substr in mapping.lower():
+                    return jid
+
+        # Prefer explicit index (1-based) with standard mapping
+        if preferred_index_1based is not None:
+            first = getattr(glfw, "JOYSTICK_1", 0)
+            jid = first + (preferred_index_1based - 1)
+            if not glfw.joystick_present(jid):
+                raise RuntimeError(f"Requested joystick index {preferred_index_1based} not present")
+            if not glfw.joystick_is_gamepad(jid):
+                raise RuntimeError(f"Requested joystick index {preferred_index_1based} does not have a standard gamepad mapping")
+            return jid
+
+        # Fallback: first standard-mapped gamepad
+        for jid, name, is_gp in devices:
+            if is_gp:
+                return jid
+        raise RuntimeError("Found joysticks but none with a standard gamepad mapping")
     
     def get_velocity_commands(self) -> tuple[float, float, float]:
         """Get velocity commands from analog sticks.
@@ -773,6 +834,8 @@ def main():
     cycle_button = CONFIG.get("cycle_button", None)
     exit_button = CONFIG.get("exit_button", 9)
     gamepad_debug = CONFIG.get("gamepad_debug", False)
+    gamepad_preferred_name = CONFIG.get("gamepad_preferred_name", None)
+    gamepad_preferred_index = CONFIG.get("gamepad_preferred_index", None)
     
     # Camera settings
     camera_distance = CONFIG.get("camera_distance", 3.0)
@@ -783,6 +846,30 @@ def main():
     print("[INFO] Starting standalone policy deployment")
     print(f"[INFO] Model XML: {model_xml}")
     print(f"[INFO] Policy: {policy_path}")
+
+    # Enumerate available gamepads for visibility (before initialization)
+    try:
+        glfw.init()
+        devices = GamepadController._enumerate_devices()
+        print("\n[INFO] Detected gamepads:")
+        if devices:
+            first = getattr(glfw, "JOYSTICK_1", 0)
+            for jid, name, is_gp in devices:
+                idx = (jid - first) + 1
+                mapping = GamepadController._to_str_name(glfw.get_gamepad_name(jid)) if is_gp else "(no standard mapping)"
+                pref_marker = ""
+                if gamepad_preferred_index is not None and idx == gamepad_preferred_index:
+                    pref_marker = " <- preferred index"
+                if gamepad_preferred_name:
+                    substr = gamepad_preferred_name.lower()
+                    if substr in name.lower() or (is_gp and substr in mapping.lower()):
+                        pref_marker = " <- preferred name"
+                print(f"  [{idx:2d}] {name} | mapping: {mapping}{pref_marker}")
+        else:
+            print("  (none)")
+        print()
+    except Exception as e:
+        print(f"[WARN] Gamepad scan error: {e}")
     
     # Load MuJoCo model
     if not model_xml.exists():
@@ -819,6 +906,8 @@ def main():
                 policy_cycle=policy_cycle,
                 cycle_button=cycle_button,
                 initial_policy_path=str(policy_path),
+                preferred_name=gamepad_preferred_name,
+                preferred_index_1based=gamepad_preferred_index,
             )
             print("[INFO] Gamepad initialized - using analog sticks for control")
         except RuntimeError as e:
