@@ -453,7 +453,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    # curriculum: CurriculumCfg = CurriculumCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
 
 
     def __post_init__(self) -> None:
@@ -477,22 +477,25 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
 
 
         # # Set terrain to plane and disable height scanning
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
+        # self.scene.terrain.terrain_type = "plane"
+        # self.scene.terrain.terrain_generator = None
 
 
         if self.scene.height_scanner is not None:
             self.scene.height_scanner.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
+
+
+
         # self.scene.height_scanner = None
         # this generates terrains with increasing difficulty and is useful for training
-        # if getattr(self.curriculum, "terrain_levels", None) is not None:
-        #     if self.scene.terrain.terrain_generator is not None:
-        #         self.scene.terrain.terrain_generator.curriculum = True
-        # else:
-        #     if self.scene.terrain.terrain_generator is not None:
-        #         self.scene.terrain.terrain_generator.curriculum = False
+        if getattr(self.curriculum, "terrain_levels", None) is not None:
+            if self.scene.terrain.terrain_generator is not None:
+                self.scene.terrain.terrain_generator.curriculum = True
+        else:
+            if self.scene.terrain.terrain_generator is not None:
+                self.scene.terrain.terrain_generator.curriculum = False
 
 
        
