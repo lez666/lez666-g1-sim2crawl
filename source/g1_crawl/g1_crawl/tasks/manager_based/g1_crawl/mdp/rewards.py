@@ -20,7 +20,7 @@ from isaaclab.assets import  RigidObject
 from isaaclab.assets import Articulation
 
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
+from isaaclab.sensors import ContactSensor, RayCaster
 from isaaclab.utils.math import quat_apply, quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
@@ -50,6 +50,17 @@ def both_feet_on_ground(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     # Count feet in contact
     both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
     return both_feet_in_contact.float()
+
+
+def foot_clearance_reward(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
+) -> torch.Tensor:
+    """Reward the swinging feet for clearing a specified height off the ground"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    foot_z_target_error = torch.square(asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height)
+    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    reward = foot_z_target_error * foot_velocity_tanh
+    return torch.exp(-torch.sum(reward, dim=1) / std)
 
 
 def both_feet_on_ground_when_stationary(
@@ -1265,6 +1276,31 @@ def base_height_l2(
     return torch.sum(torch.square(height_error), dim=1)
 
 
+def base_height_l2_sensor(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_cfg: SceneEntityCfg | None = None,
+) -> torch.Tensor:
+    """Penalize asset height from its target using L2 squared kernel.
+
+    Note:
+        For flat terrain, target height is in the world frame. For rough terrain,
+        sensor readings can adjust the target height to account for the terrain.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    if sensor_cfg is not None:
+        sensor: RayCaster = env.scene[sensor_cfg.name]
+        # Adjust the target height using the sensor data
+        adjusted_target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
+    else:
+        # Use the provided target height directly for flat terrain
+        adjusted_target_height = target_height
+    # Compute the L2 squared penalty
+    return torch.square(asset.data.root_pos_w[:, 2] - adjusted_target_height)
+
+
 def base_height_l2_command_based(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -1403,3 +1439,186 @@ def com_forward_of_feet_exp(
     # Exponential bonus around target
     error_sq = torch.square(forward_offset - float(target_offset))
     return torch.exp(-error_sq / (float(std) ** 2))
+
+
+def com_forward_of_feet_linear(
+    env: ManagerBasedRLEnv,
+    tolerance: float,
+    target_offset: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+) -> torch.Tensor:
+    """Linear bonus for having the center of mass at a target forward offset relative to feet.
+    
+    This encourages the robot to maintain a specific forward/backward position of COM
+    relative to feet on the ground plane. Uses linear kernel centered at target_offset.
+    
+    Uses the actual center of mass position (root_com_pos_w) and projects positions onto
+    the ground plane using a gravity-aligned yaw frame (same logic as com_forward_of_feet).
+    
+    reward = max(0, 1 - |offset - target| / tolerance)
+    
+    When offset = target: reward = 1.0
+    When |offset - target| >= tolerance: reward = 0.0
+    Linear falloff in between.
+    
+    Args:
+        env: Environment instance
+        tolerance: Distance tolerance controlling reward falloff (smaller = sharper)
+        target_offset: Target forward offset in meters (positive = forward, negative = backward)
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with linear bonus in [0, 1]
+    """
+    if float(tolerance) <= 0.0:
+        raise RuntimeError("com_forward_of_feet_linear requires tolerance > 0")
+    
+    # Get current forward offset using actual COM (ground plane projection)
+    forward_offset = com_forward_of_feet(env, asset_cfg, feet_cfg)
+    
+    # Linear bonus around target
+    error = torch.abs(forward_offset - float(target_offset))
+    reward = torch.clamp(1.0 - error / float(tolerance), min=0.0, max=1.0)
+    return reward
+
+
+def com_aligned_with_velocity_command_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+) -> torch.Tensor:
+    """Reward when CoM is shifted in the direction of velocity command (leaning into movement).
+    
+    This encourages the robot to shift its center of mass in the direction it's walking,
+    which is essential for stable dynamic locomotion. The robot should lean forward when
+    walking forward, sideways when walking sideways, etc.
+    
+    Computes the CoM position relative to feet in the gravity-aligned yaw frame (XY plane),
+    then rewards alignment with the velocity command direction using an exponential kernel.
+    
+    reward = exp(- ||com_offset_xy - command_xy * scale||^2 / std^2)
+    
+    Args:
+        env: Environment instance
+        command_name: Name of the velocity command (expects [vx, vy, vz] format)
+        std: Standard deviation controlling reward falloff (smaller = sharper)
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with exponential reward in [0, 1]
+    """
+    if float(std) <= 0.0:
+        raise RuntimeError("com_aligned_with_velocity_command_exp requires std > 0")
+    
+    asset: Articulation = env.scene[asset_cfg.name]
+    
+    # Get gravity-aligned yaw frame (removes pitch and roll, keeps only yaw)
+    yaw_only_quat = yaw_quat(asset.data.root_link_quat_w)  # [N, 4]
+    
+    # Get CoM position relative to feet in yaw frame (ground plane projection)
+    com_pos_w = asset.data.root_com_pos_w  # [N, 3]
+    com_yaw_frame = quat_apply_inverse(yaw_only_quat, com_pos_w)  # [N, 3]
+    
+    feet_pos_w = asset.data.body_pos_w[:, feet_cfg.body_ids, :]  # [N, num_feet, 3]
+    N, num_feet, _ = feet_pos_w.shape
+    feet_pos_w_flat = feet_pos_w.reshape(N * num_feet, 3)  # [N*num_feet, 3]
+    yaw_quat_expanded = yaw_only_quat.unsqueeze(1).expand(-1, num_feet, -1).reshape(N * num_feet, 4)
+    feet_yaw_frame_flat = quat_apply_inverse(yaw_quat_expanded, feet_pos_w_flat)  # [N*num_feet, 3]
+    feet_yaw_frame = feet_yaw_frame_flat.reshape(N, num_feet, 3)  # [N, num_feet, 3]
+    
+    feet_center_yaw = feet_yaw_frame.mean(dim=1)  # [N, 3] - center of feet in yaw frame
+    
+    # CoM offset from feet center in XY (yaw frame ground plane)
+    com_offset_xy = com_yaw_frame[:, :2] - feet_center_yaw[:, :2]  # [N, 2]
+    
+    # Get velocity command in yaw frame (XY only)
+    cmd = env.command_manager.get_command(command_name)[:, :2]  # [N, 2] - [vx, vy]
+    
+    # Scale the command to a reasonable CoM offset target
+    # Typical CoM offset for leaning might be ~0.05-0.15m per 1 m/s of velocity
+    scale = 0.1  # meters of CoM shift per m/s of velocity command
+    target_com_offset = cmd * scale  # [N, 2]
+    
+    # Exponential reward for CoM offset matching scaled velocity command
+    error_sq = torch.sum(torch.square(com_offset_xy - target_com_offset), dim=1)
+    reward = torch.exp(-error_sq / (float(std) ** 2))
+    
+    return reward
+
+
+def com_centered_between_feet_and_hands_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    feet_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+    hands_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_wrist_link"),
+) -> torch.Tensor:
+    """Exponential reward for keeping CoM centered between feet and hands contact points.
+    
+    This encourages the robot to maintain balance during crawling by keeping the center
+    of mass positioned at the geometric center of all contact points (feet + hands).
+    This prevents falling forward or backward during quadruped locomotion.
+    
+    Uses gravity-aligned yaw frame to project all positions onto the ground plane.
+    
+    reward = exp(- ||com_xy - contact_center_xy||^2 / std^2)
+    
+    Args:
+        env: Environment instance
+        std: Standard deviation controlling reward falloff (smaller = sharper)
+        asset_cfg: Configuration for the robot asset
+        feet_cfg: Configuration for the feet bodies (should select ankle/foot links)
+        hands_cfg: Configuration for the hand bodies (should select wrist links)
+    
+    Returns:
+        Tensor of shape (num_envs,) with exponential reward in [0, 1]
+    """
+    if float(std) <= 0.0:
+        raise RuntimeError("com_centered_between_feet_and_hands_exp requires std > 0")
+    
+    asset: Articulation = env.scene[asset_cfg.name]
+    
+    # Get gravity-aligned yaw frame (removes pitch and roll, keeps only yaw)
+    yaw_only_quat = yaw_quat(asset.data.root_link_quat_w)  # [N, 4]
+    
+    # Transform CoM to yaw frame (ground plane projection)
+    com_pos_w = asset.data.root_com_pos_w  # [N, 3]
+    com_yaw_frame = quat_apply_inverse(yaw_only_quat, com_pos_w)  # [N, 3]
+    com_xy = com_yaw_frame[:, :2]  # [N, 2] - CoM in ground plane
+    
+    # Transform feet positions to yaw frame
+    feet_pos_w = asset.data.body_pos_w[:, feet_cfg.body_ids, :]  # [N, num_feet, 3]
+    N, num_feet, _ = feet_pos_w.shape
+    feet_pos_w_flat = feet_pos_w.reshape(N * num_feet, 3)  # [N*num_feet, 3]
+    yaw_quat_feet = yaw_only_quat.unsqueeze(1).expand(-1, num_feet, -1).reshape(N * num_feet, 4)
+    feet_yaw_frame_flat = quat_apply_inverse(yaw_quat_feet, feet_pos_w_flat)  # [N*num_feet, 3]
+    feet_yaw_frame = feet_yaw_frame_flat.reshape(N, num_feet, 3)  # [N, num_feet, 3]
+    feet_xy = feet_yaw_frame[:, :, :2]  # [N, num_feet, 2]
+    
+    # Transform hands positions to yaw frame
+    hands_pos_w = asset.data.body_pos_w[:, hands_cfg.body_ids, :]  # [N, num_hands, 3]
+    _, num_hands, _ = hands_pos_w.shape
+    hands_pos_w_flat = hands_pos_w.reshape(N * num_hands, 3)  # [N*num_hands, 3]
+    yaw_quat_hands = yaw_only_quat.unsqueeze(1).expand(-1, num_hands, -1).reshape(N * num_hands, 4)
+    hands_yaw_frame_flat = quat_apply_inverse(yaw_quat_hands, hands_pos_w_flat)  # [N*num_hands, 3]
+    hands_yaw_frame = hands_yaw_frame_flat.reshape(N, num_hands, 3)  # [N, num_hands, 3]
+    hands_xy = hands_yaw_frame[:, :, :2]  # [N, num_hands, 2]
+    
+    # Compute center of all contact points (feet + hands)
+    # Concatenate along the contact point dimension
+    all_contacts_xy = torch.cat([feet_xy, hands_xy], dim=1)  # [N, num_feet + num_hands, 2]
+    contact_center_xy = all_contacts_xy.mean(dim=1)  # [N, 2] - geometric center of contacts
+    
+    # Compute error between CoM and contact center
+    error_sq = torch.sum(torch.square(com_xy - contact_center_xy), dim=1)
+    
+    # Exponential reward - maximum when CoM is centered
+    reward = torch.exp(-error_sq / (float(std) ** 2))
+    
+    return reward
+

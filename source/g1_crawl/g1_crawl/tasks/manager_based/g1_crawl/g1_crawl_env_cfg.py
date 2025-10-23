@@ -32,6 +32,8 @@ from .g1 import G1_CFG
 # Scene definition
 ##
 
+USE_ROUGH_TERRAIN = False
+
 
 @configclass
 class G1CrawlProcSceneCfg(InteractiveSceneCfg):
@@ -56,10 +58,10 @@ class G1CrawlProcSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
     )
     # robots
-    robot: ArticulationCfg = MISSING
+    robot: ArticulationCfg = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot") #MISSING
     # sensors
     # height_scanner = RayCasterCfg(
-    #     prim_path="{ENV_REGEX_NS}/Robot/base",
+    #     prim_path="{ENV_REGEX_NS}/Robot/torso_link",
     #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
     #     ray_alignment="yaw",
     #     pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
@@ -89,7 +91,7 @@ class CommandsCfg:
         ranges=mdp.CrawlVelocityCommandCfg.Ranges(
             heading=(0.0,0.0),
             # Crawling fields used by the command implementation
-            lin_vel_z=(0.0, 1.5),
+            lin_vel_z=(-1.0, 2.0),
             lin_vel_y=(0.,0.),
             ang_vel_x=(-1.0, 1.0)
         )
@@ -279,16 +281,23 @@ def override_value(env, env_ids, data, value, num_steps):
 
 
 
+# @configclass
+# class CurriculumCfg:
+#     push_event_freq = CurrTerm(
+#             func=mdp.modify_term_cfg,
+#             params={
+#                 "address": "events.push_robot.interval_range_s",   # note: `_manager.cfg` is omitted
+#                 "modify_fn": override_value,
+#                 "modify_params": {"value": (3,10), "num_steps": 36000} #24*ITERATION 
+#             }
+#         )
+
 @configclass
 class CurriculumCfg:
-    push_event_freq = CurrTerm(
-            func=mdp.modify_term_cfg,
-            params={
-                "address": "events.push_robot.interval_range_s",   # note: `_manager.cfg` is omitted
-                "modify_fn": override_value,
-                "modify_params": {"value": (3,10), "num_steps": 36000} #24*ITERATION 
-            }
-        )
+    """Curriculum terms for the MDP."""
+
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_crawl)
+
 
 @configclass
 class RewardsCfg:
@@ -303,6 +312,7 @@ class RewardsCfg:
     track_ang_vel_x_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.25}
     )
+
     flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.2)
     
     
@@ -314,9 +324,19 @@ class RewardsCfg:
         params={
             "target_height": 0.22,
             "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
-            # "sensor_cfg": SceneEntityCfg("height_scanner"),
         },
     )
+
+    # foot_clearance = RewTerm(
+    #     func=mdp.foot_clearance_reward,
+    #     weight=0.5,
+    #     params={
+    #         "std": 0.05,
+    #         "tanh_mult": 2.0,
+    #         "target_height": 0.1,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link|.*_wrist_link"),
+    #     },
+    # )
 
     joint_deviation_all = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -324,40 +344,40 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     
-    #limits
+    # #limits
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-1.0,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     torque_limits = RewTerm(
         func=mdp.applied_torque_limits,
-        weight=-1.0,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
     #regulatorization
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-    bellyhead_drag_penalty = RewTerm(
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-2)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1e-4)
+    # bellyhead_drag_penalty = RewTerm(
+    #     func=mdp.undesired_contacts,
+    #     weight=-5.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names= "torso_link",
+    #         ),
+    #         "threshold": 1.0,  # in Newtons (normal force magnitude)
+    #     },
+    # )
+
+    undesired_body_contact_penalty = RewTerm(
         func=mdp.undesired_contacts,
         weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names= "torso_link",
-            ),
-            "threshold": 1.0,  # in Newtons (normal force magnitude)
-        },
-    )
-
-    undesired_body_contact_penalty = RewTerm(
-        func=mdp.undesired_contacts,
-        weight=-2.0,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names="^(?!.*ankle_roll_link|.*wrist_link|torso_link).*",
+                body_names="^(?!.*ankle_roll_link|.*wrist_link).*",
             ),
             "threshold": 1.0,  # in Newtons (normal force magnitude)
         },
@@ -424,38 +444,48 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
+    if USE_ROUGH_TERRAIN:
+        curriculum: CurriculumCfg = CurriculumCfg()
+
 
 
     def __post_init__(self) -> None:
         """Post initialization."""
-
-        # general settings
         self.decimation = 4
         self.episode_length_s = 20.0
-        # simulation settings
-        # self.sim.dt = 0.002
         self.sim.dt = 0.005
-        # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
 
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
 
-# 
-        self.scene.robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
 
-        # update sensor update periods
-        if self.scene.contact_forces is not None:
-            self.scene.contact_forces.update_period = self.sim.dt
-
-        # Set terrain to plane and disable height scanning
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
+        # # Set terrain to plane and disable height scanning
+        # self.scene.terrain.terrain_type = "plane"
+        # self.scene.terrain.terrain_generator = None
         # self.scene.height_scanner = None
+        if USE_ROUGH_TERRAIN:
+            # if self.scene.height_scanner is not None:
+            #     self.scene.height_scanner.update_period = self.decimation * self.sim.dt
+            if self.scene.contact_forces is not None:
+                self.scene.contact_forces.update_period = self.sim.dt
 
-        # if getattr(self.curriculum, "terrain_levels", None) is not None:
-        #     if self.scene.terrain.terrain_generator is not None:
-        #         self.scene.terrain.terrain_generator.curriculum = True
+
+
+    
+    
+            # this generates terrains with increasing difficulty and is useful for training
+            if getattr(self.curriculum, "terrain_levels", None) is not None:
+                if self.scene.terrain.terrain_generator is not None:
+                    self.scene.terrain.terrain_generator.curriculum = True
+            else:
+                if self.scene.terrain.terrain_generator is not None:
+                    self.scene.terrain.terrain_generator.curriculum = False
+
+        else:
+            self.scene.terrain.terrain_type = "plane"
+            self.scene.terrain.terrain_generator = None
+            self.scene.height_scanner = None
+
+
        
