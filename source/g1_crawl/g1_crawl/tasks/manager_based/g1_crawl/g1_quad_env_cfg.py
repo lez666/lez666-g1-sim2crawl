@@ -238,58 +238,6 @@ class EventCfg:
         },
     )
 
-    # reset_base = EventTerm(
-    #     func=mdp.reset_root_state_uniform,
-    #     mode="reset",
-    #     params={
-    #         "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
-    #         "velocity_range": {
-    #             "x": (-0.5, 0.5),
-    #             "y": (-0.5, 0.5),
-    #             "z": (-0.5, 0.5),
-    #             "roll": (-0.5, 0.5),
-    #             "pitch": (-0.5, 0.5),
-    #             "yaw": (-0.5, 0.5),
-    #         },
-    #     },
-    # )
-
-    # reset_robot_joints = EventTerm(
-    #     func=mdp.reset_joints_by_scale,
-    #     mode="reset",
-    #     params={
-    #         "position_range": (0.5, 1.5),
-    #         "velocity_range": (0.0, 0.0),
-    #     },
-    # )
-
-    # reset
-    # Reset robot to pose from JSON with optional noise/scaling for both root and joints
-    # reset_robot = EventTerm(
-    #     func=mdp.reset_to_pose_json,
-    #     mode="reset",
-    #     params={
-    #         "json_path": DEFAULT_POSE_PATH,
-    #         # Root pose noise (position in meters, angles in radians)
-    #         "pose_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "yaw": (-3.14, 3.14),
-    #         },
-    #         "velocity_range": {
-    #             "x": (0.0, 0.0),
-    #             "y": (0.0, 0.0),
-    #             "z": (0.0, 0.0),
-    #             "roll": (0.0, 0.0),
-    #             "pitch": (0.0, 0.0),
-    #             "yaw": (0.0, 0.0),
-    #         },
-
-    #         "position_range": (0.9, 1.1),
-    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-    #         "joint_velocity_range": (0.0, 0.0),
-    #     },
-    # )
 
     
     reset_robot = EventTerm(
@@ -297,27 +245,7 @@ class EventCfg:
         mode="reset",
         params={
             "json_path": "assets/quad-pose.json",
-            # # Root pose noise (position in meters, angles in radians)
-            # "pose_range": {
-            #     "x": (-0.1, 0.1),
-            #     "y": (-0.1, 0.1),
-            #     "z": (-0.1, 0.1),
-            #     "roll": (-0.1, 0.1),
-            #     "pitch": (-0.1, 0.1),
-            #     # "yaw": (-3.14, 3.14),
-            # },
-            # "velocity_range": {
-            #     "x": (-0.1, 0.1),
-            #     "y": (-0.1, 0.1),
-            #     "z": (-0.1, 0.1),
-            #     "roll": (-0.1, 0.1),
-            #     "pitch": (-0.1, 0.1),
-            #     "yaw": (-0.1, 0.1),
-            # },
 
-            # "position_range": (0.9, 1.1),
-            # # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-            # "joint_velocity_range": (0.0, 0.0),
         },
     )
 
@@ -348,20 +276,20 @@ class RewardsCfg:
 
     # POSE
 
-    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
+    # flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
     
     
-    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    # # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-.1,
-        params={
-            "target_height": 0.4,
-            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
-            # "sensor_cfg": SceneEntityCfg("height_scanner"),
-        },
-    )
+    # base_height_l2 = RewTerm(
+    #     func=mdp.base_height_l2,
+    #     weight=-.1,
+    #     params={
+    #         "target_height": 0.4,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+    #         # "sensor_cfg": SceneEntityCfg("height_scanner"),
+    #     },
+    # )
     
 
     # pose_deviation_all = RewTerm(
@@ -373,14 +301,14 @@ class RewardsCfg:
     #     },
     # )
 
-    pose_deviation_hip = RewTerm(
-        func=mdp.pose_json_deviation_l1,
-        weight=-0.1,
-        params={
-            "pose_path":"assets/quad-pose.json",
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
-        },
-    )
+    # pose_deviation_hip = RewTerm(
+    #     func=mdp.pose_json_deviation_l1,
+    #     weight=-0.1,
+    #     params={
+    #         "pose_path":"assets/quad-pose.json",
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
+    #     },
+    # )
 
 
 

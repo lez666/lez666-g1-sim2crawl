@@ -58,14 +58,14 @@ class G1CrawlProcSceneCfg(InteractiveSceneCfg):
     # robots
     robot: ArticulationCfg = MISSING
     # sensors
-    height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-    )
+    # height_scanner = RayCasterCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/base",
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     ray_alignment="yaw",
+    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    # )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
     # imu_pelvis = ImuCfg(prim_path="{ENV_REGEX_NS}/Robot/base",offset)
     sky_light = AssetBaseCfg(
@@ -220,11 +220,12 @@ class EventCfg:
     # reset
     # Replace uniform base reset with animation-based reset
     reset_base = EventTerm(
-        func=mdp.reset_from_animation,
+        func=mdp.reset_from_animation_frame,
         mode="reset",
         params={
             # Small random offsets on root pose at reset (position in meters, angles in radians)
-            "pose_noise_range": {
+            "json_path": "assets/animation_rc4.json",
+            "pose_range": {
                 "x": (-0.05, 0.05),
                 "y": (-0.05, 0.05),
                 "z": (-0.05, 0.05),
@@ -233,7 +234,7 @@ class EventCfg:
                 "yaw": (-0.10, 0.10),
             },
             # Small random root velocity at reset (linear m/s, angular rad/s)
-            "velocity_noise_range": {
+            "velocity_range": {
                 "x": (-0.20, 0.20),
                 "y": (-0.20, 0.20),
                 "z": (-0.2, 0.2),
@@ -299,22 +300,22 @@ class RewardsCfg:
         params={"command_name": "base_velocity", "std": 0.25},
     )
     track_ang_vel_x_exp = RewTerm(
-        func=mdp.track_ang_vel_x_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.25}
+        func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.25}
     )
     flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=.1)
     
     
     # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-.1,
-        params={
-            "target_height": 0.22,
-            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
-            "sensor_cfg": SceneEntityCfg("height_scanner"),
-        },
-    )
+    # base_height_l2 = RewTerm(
+    #     func=mdp.base_height_l2_sensor,
+    #     weight=-.1,
+    #     params={
+    #         "target_height": 0.22,
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "sensor_cfg": SceneEntityCfg("height_scanner"),
+    #     },
+    # )
 
     joint_deviation_all = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -423,7 +424,7 @@ class G1CrawlProcEnvCfg(ManagerBasedRLEnvCfg):
         # simulation settings
         # self.sim.dt = 0.002
         self.sim.dt = 0.005
-        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
+        # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
 
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material

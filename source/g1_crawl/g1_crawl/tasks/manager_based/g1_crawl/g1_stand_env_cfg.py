@@ -293,8 +293,8 @@ class RewardsCfg:
     
 
     # COMMAND
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.3)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.3)
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.1)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
     # track_lin_vel_xy_exp = RewTerm(
     #     func=mdp.track_lin_vel_xy_yaw_frame_exp_shamble,
     #     weight=2.0,
@@ -305,7 +305,7 @@ class RewardsCfg:
     # )
 
     # POSE
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-.2)
 
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
@@ -350,17 +350,17 @@ class RewardsCfg:
         },
     )
 
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001)
 
-    both_feet_on_ground_stationary = RewTerm(
-        func=mdp.both_feet_on_ground_when_stationary,
-        weight=-.1,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.1,
-        },
-    )
+    # both_feet_on_ground_stationary = RewTerm(
+    #     func=mdp.both_feet_on_ground_when_stationary,
+    #     weight=-.1,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "threshold": 0.1,
+    #     },
+    # )
 
    
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)

@@ -96,6 +96,18 @@ CONFIG = {
     
     # Track robot with camera (follows robot position)
     "camera_tracking": True,
+    
+    # === GAIN MULTIPLIERS (match deploy_real.py concept) ===
+    # Group-based KP/KD multipliers applied to MuJoCo actuators
+    # Legs: hips, knees, ankles
+    # Upper: waist + shoulders, elbows, wrists
+    "kp_multiplier_legs": 1.0,
+    "kd_multiplier_legs": 1.0,
+    "kp_multiplier_upper": 1.0,
+    "kd_multiplier_upper": 1.0,
+    
+    # Amount to change multipliers per button press
+    "gain_step": 0.05,
 }
 
 # ============================================================================
@@ -525,10 +537,20 @@ class StandalonePolicyController:
         device: str = "cpu",
         action_scale: float = 0.5,
         training_defaults: dict[str, float] | None = None,
+        kp_multiplier_legs: float = 1.0,
+        kd_multiplier_legs: float = 1.0,
+        kp_multiplier_upper: float = 1.0,
+        kd_multiplier_upper: float = 1.0,
     ):
         self.mj_model = mj_model
         self.device = device
         self.action_scale = action_scale
+        
+        # Gain multipliers (group-based)
+        self.kp_multiplier_legs = float(kp_multiplier_legs)
+        self.kd_multiplier_legs = float(kd_multiplier_legs)
+        self.kp_multiplier_upper = float(kp_multiplier_upper)
+        self.kd_multiplier_upper = float(kd_multiplier_upper)
         
         # Get joint names from MuJoCo model (skip free joint)
         self.joint_names = []
@@ -604,6 +626,89 @@ class StandalonePolicyController:
         self._policy.eval()
         self._current_policy_path = policy_path
         print(f"[INFO] Policy loaded successfully")
+        
+        # Initialize PD gain scaling from model actuators
+        self._init_actuator_gain_scaling()
+        self._apply_gain_multipliers()
+
+    def _init_actuator_gain_scaling(self) -> None:
+        """Capture base KP/KD from MuJoCo actuators and group into legs/upper."""
+        nu = self.mj_model.nu
+        self._actuator_names: list[str] = []
+        self._actuator_group: list[str] = []  # "legs" or "upper"
+        self._actuator_base_kp = np.zeros(nu, dtype=np.float32)
+        self._actuator_base_kd = np.zeros(nu, dtype=np.float32)
+
+        # Define grouping by actuator (joint) name
+        def is_leg(name: str) -> bool:
+            return (
+                ("hip_" in name) or ("knee" in name) or ("ankle_" in name)
+            )
+
+        def is_upper(name: str) -> bool:
+            return (
+                (name == "waist_yaw_joint") or ("shoulder_" in name) or ("elbow" in name) or ("wrist_" in name)
+            )
+
+        for i in range(nu):
+            act_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+            self._actuator_names.append(act_name or f"actuator_{i}")
+
+            # Base KP from gainprm[0]; Base KD from -biasprm[2]
+            base_kp = float(self.mj_model.actuator_gainprm[i, 0])
+            base_kd = float(-self.mj_model.actuator_biasprm[i, 2])
+            self._actuator_base_kp[i] = base_kp
+            self._actuator_base_kd[i] = base_kd
+
+            if is_leg(self._actuator_names[-1]):
+                self._actuator_group.append("legs")
+            elif is_upper(self._actuator_names[-1]):
+                self._actuator_group.append("upper")
+            else:
+                # Default any unknowns to upper to be conservative
+                self._actuator_group.append("upper")
+
+        print("[GAINS] Captured base KP/KD from model actuators")
+
+    def _apply_gain_multipliers(self) -> None:
+        """Apply current group multipliers to MuJoCo actuator PD params."""
+        for i, group in enumerate(self._actuator_group):
+            base_kp = self._actuator_base_kp[i]
+            base_kd = self._actuator_base_kd[i]
+            if group == "legs":
+                kp = base_kp * self.kp_multiplier_legs
+                kd = base_kd * self.kd_multiplier_legs
+            else:
+                kp = base_kp * self.kp_multiplier_upper
+                kd = base_kd * self.kd_multiplier_upper
+
+            # Update actuator parameters in-place
+            self.mj_model.actuator_gainprm[i, 0] = kp
+            self.mj_model.actuator_biasprm[i, 1] = -kp
+            self.mj_model.actuator_biasprm[i, 2] = -kd
+
+        print(
+            f"[GAINS] Applied multipliers | legs: kp={self.kp_multiplier_legs:.2f} kd={self.kd_multiplier_legs:.2f}  "
+            f"upper: kp={self.kp_multiplier_upper:.2f} kd={self.kd_multiplier_upper:.2f}"
+        )
+
+    def set_gain_multipliers(
+        self,
+        kp_multiplier_legs: float | None = None,
+        kd_multiplier_legs: float | None = None,
+        kp_multiplier_upper: float | None = None,
+        kd_multiplier_upper: float | None = None,
+    ) -> None:
+        """Update gain multipliers and re-apply to actuators."""
+        if kp_multiplier_legs is not None:
+            self.kp_multiplier_legs = float(kp_multiplier_legs)
+        if kd_multiplier_legs is not None:
+            self.kd_multiplier_legs = float(kd_multiplier_legs)
+        if kp_multiplier_upper is not None:
+            self.kp_multiplier_upper = float(kp_multiplier_upper)
+        if kd_multiplier_upper is not None:
+            self.kd_multiplier_upper = float(kd_multiplier_upper)
+        self._apply_gain_multipliers()
     
     def load_policy(self, policy_path: Path) -> None:
         """Hot-swap to a different policy."""
@@ -837,6 +942,12 @@ def main():
     gamepad_preferred_name = CONFIG.get("gamepad_preferred_name", None)
     gamepad_preferred_index = CONFIG.get("gamepad_preferred_index", None)
     
+    # Gain multipliers
+    kp_multiplier_legs = CONFIG.get("kp_multiplier_legs", 1.0)
+    kd_multiplier_legs = CONFIG.get("kd_multiplier_legs", 1.0)
+    kp_multiplier_upper = CONFIG.get("kp_multiplier_upper", 1.0)
+    kd_multiplier_upper = CONFIG.get("kd_multiplier_upper", 1.0)
+    
     # Camera settings
     camera_distance = CONFIG.get("camera_distance", 3.0)
     camera_azimuth = CONFIG.get("camera_azimuth", 90)
@@ -923,6 +1034,10 @@ def main():
         device=device,
         action_scale=action_scale,
         training_defaults=TRAINING_DEFAULT_ANGLES,
+        kp_multiplier_legs=kp_multiplier_legs,
+        kd_multiplier_legs=kd_multiplier_legs,
+        kp_multiplier_upper=kp_multiplier_upper,
+        kd_multiplier_upper=kd_multiplier_upper,
     )
     
     # Launch viewer

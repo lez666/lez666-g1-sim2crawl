@@ -38,6 +38,23 @@ Kd = [
     DAMPING_5020, DAMPING_5020, DAMPING_5020, DAMPING_5020, DAMPING_5020,                                   # arms (R)
 ]
 
+
+def get_kp_kd_scaled(kp_multiplier_legs: float = 1.0,
+                     kd_multiplier_legs: float = 1.0,
+                     kp_multiplier_upper: float = 1.0,
+                     kd_multiplier_upper: float = 1.0):
+    """Return KP/KD arrays scaled by separate multipliers for legs and upper body.
+
+    Indices 0-11 correspond to legs, 12-22 correspond to upper body (waist + arms).
+    """
+    kp = np.array(Kp, dtype=np.float32)
+    kd = np.array(Kd, dtype=np.float32)
+    kp[:12] *= float(kp_multiplier_legs)
+    kd[:12] *= float(kd_multiplier_legs)
+    kp[12:] *= float(kp_multiplier_upper)
+    kd[12:] *= float(kd_multiplier_upper)
+    return kp, kd
+
 default_pos = [
     -0.1, 0, 0, 0.3, -0.2, 0,
     -0.1, 0, 0, 0.3, -0.2, 0,

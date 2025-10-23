@@ -7,6 +7,7 @@ from utils import (
     joint2motor_idx,
     Kp,
     Kd,
+    get_kp_kd_scaled,
     G1_NUM_MOTOR,
     default_pos,
     crawl_angles,
@@ -36,6 +37,7 @@ import time
 import sys
 import struct
 import argparse
+import select
 import numpy as np
 import torch
 
@@ -69,6 +71,14 @@ MAX_ANG_VEL_YAW = 1.5      # rad/s - Max angular velocity (right stick X)
 # Transition timing (seconds) - smooth lerping between modes
 TRANSITION_TIME_HOLD_POSES = 2.0  # For default_pos and crawl_pos modes
 TRANSITION_TIME_POLICY = 0.5      # For policy mode
+
+# KP/KD multipliers for tuning responsiveness (legs vs upper body)
+KP_MULTIPLIER_LEGS = 1.0
+KD_MULTIPLIER_LEGS = 1.0
+KP_MULTIPLIER_UPPER = 1.0
+KD_MULTIPLIER_UPPER = 1.0
+
+GAIN_STEP = 0.05
 
 # Control modes (switched via D-pad):
 #   UP:    default_pos - Hold default standing position
@@ -241,6 +251,15 @@ class Controller:
         self.crawl_angles_array = np.array(crawl_angles)
         self.default_angles_array = np.array(default_angles_config)
 
+        # Runtime-tunable gain multipliers
+        self.kp_multiplier_legs = float(KP_MULTIPLIER_LEGS)
+        self.kd_multiplier_legs = float(KD_MULTIPLIER_LEGS)
+        self.kp_multiplier_upper = float(KP_MULTIPLIER_UPPER)
+        self.kd_multiplier_upper = float(KD_MULTIPLIER_UPPER)
+
+        # Compute initial scaled KP/KD arrays
+        self._recompute_gains()
+
         # Remote controller state
         self.remote = unitreeRemoteController()
 
@@ -273,6 +292,39 @@ class Controller:
         
         # Safety gate: require Start button press before allowing controls
         self._system_started = False
+
+    def _recompute_gains(self):
+        self._kp_scaled, self._kd_scaled = get_kp_kd_scaled(
+            kp_multiplier_legs=self.kp_multiplier_legs,
+            kd_multiplier_legs=self.kd_multiplier_legs,
+            kp_multiplier_upper=self.kp_multiplier_upper,
+            kd_multiplier_upper=self.kd_multiplier_upper,
+        )
+
+    def adjust_gains(self, group: str, kind: str, delta: float):
+        if group == "legs":
+            if kind == "kp":
+                self.kp_multiplier_legs = max(0.0, self.kp_multiplier_legs + delta)
+            elif kind == "kd":
+                self.kd_multiplier_legs = max(0.0, self.kd_multiplier_legs + delta)
+            else:
+                raise ValueError("Unknown gain kind for legs: " + kind)
+        elif group == "upper":
+            if kind == "kp":
+                self.kp_multiplier_upper = max(0.0, self.kp_multiplier_upper + delta)
+            elif kind == "kd":
+                self.kd_multiplier_upper = max(0.0, self.kd_multiplier_upper + delta)
+            else:
+                raise ValueError("Unknown gain kind for upper: " + kind)
+        else:
+            raise ValueError("Unknown gain group: " + group)
+
+        self._recompute_gains()
+        print(
+            f"Gains updated | legs: kp={self.kp_multiplier_legs:.2f} kd={self.kd_multiplier_legs:.2f}  "
+            f"upper: kp={self.kp_multiplier_upper:.2f} kd={self.kd_multiplier_upper:.2f}"
+        )
+
 
     def _rising(self, name: str, current: int) -> bool:
         was = self._prev_buttons.get(name, 0)
@@ -317,8 +369,8 @@ class Controller:
             current_q = self._transition_start_pos[i] * (1 - alpha) + self._transition_target_pos[i] * alpha
             self.low_cmd.motor_cmd[motor_idx].q = current_q
             self.low_cmd.motor_cmd[motor_idx].qd = 0
-            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
         
         self.send_cmd(self.low_cmd)
@@ -338,8 +390,8 @@ class Controller:
             motor_idx = joint2motor_idx[i]
             self.low_cmd.motor_cmd[motor_idx].q = float(self.default_pos_array[i])
             self.low_cmd.motor_cmd[motor_idx].qd = 0
-            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
         self.send_cmd(self.low_cmd)
 
@@ -349,8 +401,8 @@ class Controller:
             motor_idx = joint2motor_idx[i]
             self.low_cmd.motor_cmd[motor_idx].q = float(self.crawl_angles_array[i])
             self.low_cmd.motor_cmd[motor_idx].qd = 0
-            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
         self.send_cmd(self.low_cmd)
 
@@ -609,8 +661,8 @@ class Controller:
                 self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * \
                     (1 - alpha) + target_pos * alpha
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
-                self.low_cmd.motor_cmd[motor_idx].kp = Kp[j]
-                self.low_cmd.motor_cmd[motor_idx].kd = Kd[j]
+                self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[j]
+                self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[j]
                 self.low_cmd.motor_cmd[motor_idx].tau = 0
             self.send_cmd(self.low_cmd)
             time.sleep(self.control_dt)
@@ -645,8 +697,8 @@ class Controller:
                 target_pos = float(target_pose[j])
                 self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * (1 - alpha) + target_pos * alpha
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
-                self.low_cmd.motor_cmd[motor_idx].kp = Kp[j]
-                self.low_cmd.motor_cmd[motor_idx].kd = Kd[j]
+                self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[j]
+                self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[j]
                 self.low_cmd.motor_cmd[motor_idx].tau = 0
             self.send_cmd(self.low_cmd)
             time.sleep(self.control_dt)
@@ -670,8 +722,8 @@ class Controller:
                 motor_idx = joint2motor_idx[i]
                 self.low_cmd.motor_cmd[motor_idx].q = default_pos[i]
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
-                self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-                self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+                self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[i]
+                self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[i]
                 self.low_cmd.motor_cmd[motor_idx].tau = 0
             self.send_cmd(self.low_cmd)
             time.sleep(self.control_dt)
@@ -691,8 +743,8 @@ class Controller:
                 motor_idx = joint2motor_idx[i]
                 self.low_cmd.motor_cmd[motor_idx].q = self.crawl_angles_array[i]
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
-                self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-                self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+                self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[i]
+                self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[i]
                 self.low_cmd.motor_cmd[motor_idx].tau = 0
             self.send_cmd(self.low_cmd)
             time.sleep(self.control_dt)
@@ -802,8 +854,8 @@ class Controller:
             motor_idx = joint2motor_idx[i]
             self.low_cmd.motor_cmd[motor_idx].q = motor_targets[i]
             self.low_cmd.motor_cmd[motor_idx].qd = 0
-            self.low_cmd.motor_cmd[motor_idx].kp = Kp[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = Kd[i]
+            self.low_cmd.motor_cmd[motor_idx].kp = self._kp_scaled[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = self._kd_scaled[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
 
         # send the command
@@ -859,6 +911,12 @@ if __name__ == "__main__":
     print(f"  Left stick Y: Forward/backward (±{MAX_LIN_VEL_FORWARD} m/s)")
     print(f"  Left stick X: Strafe left/right (±{MAX_LIN_VEL_LATERAL} m/s)")
     print(f"  Right stick X: Rotate/yaw (±{MAX_ANG_VEL_YAW} rad/s)")
+    print("\nKeyboard tuning (non-blocking, no Enter needed):")
+    print(f"  q/a: legs KP +/- {GAIN_STEP}")
+    print(f"  w/s: legs KD +/- {GAIN_STEP}")
+    print(f"  e/d: upper KP +/- {GAIN_STEP}")
+    print(f"  r/f: upper KD +/- {GAIN_STEP}")
+    print("  h  : print current gain multipliers")
     print("\nAlways active:")
     print("  Start: ENABLE system (press this first!)")
     print("  Select: QUIT immediately")
@@ -877,28 +935,54 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Controller ready. Press START to begin!")
     print("=" * 60)
-    while True:
-        # Check remote heartbeat first (safety check)
-        controller.check_remote_heartbeat()
-        
-        controller.process_global_buttons()
+    with NonBlockingInput() as kb:
+        while True:
+            # Handle keyboard (single key, non-blocking)
+            if select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
+                ch = sys.stdin.read(1)
+                if ch == 'q':
+                    controller.adjust_gains('legs', 'kp', +GAIN_STEP)
+                elif ch == 'a':
+                    controller.adjust_gains('legs', 'kp', -GAIN_STEP)
+                elif ch == 'w':
+                    controller.adjust_gains('legs', 'kd', +GAIN_STEP)
+                elif ch == 's':
+                    controller.adjust_gains('legs', 'kd', -GAIN_STEP)
+                elif ch == 'e':
+                    controller.adjust_gains('upper', 'kp', +GAIN_STEP)
+                elif ch == 'd':
+                    controller.adjust_gains('upper', 'kp', -GAIN_STEP)
+                elif ch == 'r':
+                    controller.adjust_gains('upper', 'kd', +GAIN_STEP)
+                elif ch == 'f':
+                    controller.adjust_gains('upper', 'kd', -GAIN_STEP)
+                elif ch == 'h':
+                    print(
+                        f"Gains | legs: kp={controller.kp_multiplier_legs:.2f} kd={controller.kd_multiplier_legs:.2f}  "
+                        f"upper: kp={controller.kp_multiplier_upper:.2f} kd={controller.kd_multiplier_upper:.2f}"
+                    )
 
-        # Handle transitions first - they override normal mode behavior
-        if controller._in_transition:
-            controller._execute_transition_step()
-            time.sleep(controller.control_dt)
-        elif controller.control_mode == "policy":
-            controller.run()
-        elif controller.control_mode == "default_pos":
-            controller.send_default_pos_command()
-            time.sleep(controller.control_dt)
-        elif controller.control_mode == "crawl_pos":
-            controller.send_crawl_pos_command()
-            time.sleep(controller.control_dt)
-        else:  # "damped" or any unknown -> default to damped
-            create_damping_cmd(controller.low_cmd)
-            controller.send_cmd(controller.low_cmd)
-            time.sleep(controller.control_dt)
+            # Check remote heartbeat first (safety check)
+            controller.check_remote_heartbeat()
+            
+            controller.process_global_buttons()
+
+            # Handle transitions first - they override normal mode behavior
+            if controller._in_transition:
+                controller._execute_transition_step()
+                time.sleep(controller.control_dt)
+            elif controller.control_mode == "policy":
+                controller.run()
+            elif controller.control_mode == "default_pos":
+                controller.send_default_pos_command()
+                time.sleep(controller.control_dt)
+            elif controller.control_mode == "crawl_pos":
+                controller.send_crawl_pos_command()
+                time.sleep(controller.control_dt)
+            else:  # "damped" or any unknown -> default to damped
+                create_damping_cmd(controller.low_cmd)
+                controller.send_cmd(controller.low_cmd)
+                time.sleep(controller.control_dt)
 
     # Final cleanup is handled in emergency quit path; normal exit can just end.
     print("Exit")
