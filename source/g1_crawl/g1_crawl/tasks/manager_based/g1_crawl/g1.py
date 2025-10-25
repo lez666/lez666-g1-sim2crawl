@@ -603,3 +603,48 @@ def build_joint_velocity_index_map(asset: Articulation, joints_meta, qvel_labels
     if missing:
         print(f"[WARN] Missing qvel indices for {len(missing)} joints (will keep default zeros)")
     return index_map
+
+
+G1_STAND_CFG = G1_CFG.copy()
+
+G1_STAND_CFG.init_state = ArticulationCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.74),
+    joint_pos={
+        ".*_hip_pitch_joint": -0.20,
+        ".*_knee_joint": 0.42,
+        ".*_ankle_pitch_joint": -0.23,
+        ".*_elbow_joint": 0.87,
+        "left_shoulder_roll_joint": 0.16,
+        "left_shoulder_pitch_joint": 0.35,
+        "right_shoulder_roll_joint": -0.16,
+        "right_shoulder_pitch_joint": 0.35,
+    },
+    joint_vel={".*": 0.0},
+)
+
+G1_CROUCH_CFG = G1_CFG.copy()
+G1_CROUCH_CFG.init_state = ArticulationCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.38752178274180343),
+    rot=(0.7080192565917969, -0.005396246910095215, 0.7059385776519775, 0.01817569136619568),
+    joint_pos={
+        ".*_ankle_pitch_joint": -0.75,
+        "left_ankle_roll_joint": -0.2377406270636331,
+        "right_ankle_roll_joint": 0.2377406270636331,
+        ".*_elbow_joint": 0.36969565592941295,
+        ".*_hip_pitch_joint": -2.5244375945859976,
+        "left_hip_roll_joint": 0.9137644742795102,
+        "right_hip_roll_joint": -0.9137644742795102,
+        "left_hip_yaw_joint": 0.12428733954200885,
+        "right_hip_yaw_joint": -0.12428733954200885,
+        ".*_knee_joint": 2.02425540790627,
+        ".*_shoulder_pitch_joint": -1.183722275980172,
+        "left_shoulder_roll_joint": 0.3222558806062804,
+        "right_shoulder_roll_joint": -0.3222558806062804,
+        "left_shoulder_yaw_joint": -0.21877054930756162,
+        "right_shoulder_yaw_joint": 0.21877054930756162,
+        ".*_wrist_roll_joint": 0.0,
+        "waist_yaw_joint": 0.0
+    },
+    
+    joint_vel={".*": 0.0},
+)

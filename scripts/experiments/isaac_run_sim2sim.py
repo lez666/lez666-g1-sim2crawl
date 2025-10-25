@@ -13,10 +13,27 @@ from g1_crawl.tasks.manager_based.g1_crawl.g1 import G1_CFG
 
 import json
 import math
+import argparse
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import torch
+import carb
+import omni.appwindow
+
+
+# ==== Command range configuration (easy to tweak) ====
+# Raw SE2 gamepad outputs are clamped to these ranges before mapping to the policy inputs.
+CMD_MIN_VX = -1.0
+CMD_MAX_VX = 1.0
+CMD_MIN_VY = -1.0
+CMD_MAX_VY = 1.0
+CMD_MIN_OMEGA_Z = -1.0
+CMD_MAX_OMEGA_Z = 1.0
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return float(min(max(value, low), high))
 
 
 def rpy_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> torch.Tensor:
@@ -38,6 +55,58 @@ def rpy_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> torch.Tensor:
     quat = torch.tensor([w, x, y, z], dtype=torch.float32)
     quat = quat / torch.linalg.norm(quat)
     return quat
+
+
+def load_pose_json(path: str) -> dict:
+    with open(path, "r") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or "poses" not in data or not data["poses"]:
+        raise ValueError(f"Invalid pose JSON: expected key 'poses' with at least one entry: {path}")
+    pose = data["poses"][0]
+    # Basic validation
+    for key in ("base_pos", "base_rpy", "joints"):
+        if key not in pose:
+            raise KeyError(f"Pose JSON missing '{key}' field: {path}")
+    return pose
+
+
+def build_joint_name_to_index_map(asset) -> Dict[str, int]:
+    name_to_index: Dict[str, int] = {}
+    for i, n in enumerate(asset.data.joint_names):
+        name_to_index[str(n)] = int(i)
+    return name_to_index
+
+
+def apply_pose(scene: InteractiveScene, pose: Dict, name_to_index: Dict[str, int], zero_velocities: bool = True) -> None:
+    device = scene["Robot"].device
+
+    base_x, base_y, base_z = pose["base_pos"]
+    base_r, base_p, base_yaw = pose["base_rpy"]
+    wxyz = rpy_to_quat_wxyz(float(base_r), float(base_p), float(base_yaw)).to(device=device)
+
+    origin = scene.env_origins.to(device=device)[0] if hasattr(scene, "env_origins") else torch.zeros(3, device=device)
+    new_root_state = torch.zeros(1, 13, device=device)
+    base_pos_tensor = torch.tensor([float(base_x), float(base_y), float(base_z)], device=device, dtype=torch.float32)
+    new_root_state[0, :3] = base_pos_tensor + origin
+    new_root_state[0, 3:7] = wxyz
+    if zero_velocities:
+        new_root_state[0, 7:13] = 0.0
+    else:
+        new_root_state[0, 7:13] = scene["Robot"].data.root_state_w[0, 7:13]
+    scene["Robot"].write_root_pose_to_sim(new_root_state[:, :7])
+    scene["Robot"].write_root_velocity_to_sim(new_root_state[:, 7:])
+
+    joint_positions = scene["Robot"].data.default_joint_pos.clone().to(device=device)
+    joint_velocities = torch.zeros_like(joint_positions) if zero_velocities else scene["Robot"].data.joint_vel.clone().to(device=device)
+
+    for joint_name, value in pose["joints"].items():
+        if joint_name not in name_to_index:
+            raise KeyError(f"Joint '{joint_name}' not found in robot articulation. Available: {list(name_to_index.keys())}")
+        j_idx = name_to_index[joint_name]
+        joint_positions[0, j_idx] = float(value)
+
+    scene["Robot"].write_joint_state_to_sim(joint_positions, joint_velocities)
+    scene.write_data_to_sim()
 
 
 def create_scene_cfg():
@@ -85,11 +154,13 @@ class IsaacPolicyController:
         device: str = "cuda",
         action_scale: float = 0.5,
         control_dt: float = 0.02,
+        suppress_clamp_warnings: bool = False,
     ) -> None:
         self.scene = scene
         self.device = torch.device(device)
         self.action_scale = float(action_scale)
         self._control_dt = float(control_dt)
+        self._suppress_clamp_warnings = bool(suppress_clamp_warnings)
 
         # Isaac articulation joint list (string names) in Isaac order
         self.joint_names_isaac: List[str] = [str(n) for n in scene["Robot"].data.joint_names]
@@ -198,7 +269,7 @@ class IsaacPolicyController:
 
         # Warn on clamping
         clamped_mask = targets != targets_unclamped
-        if clamped_mask.any():
+        if (not self._suppress_clamp_warnings) and clamped_mask.any():
             clamped_indices = torch.where(clamped_mask)[0].detach().cpu().numpy()
             print("WARNING: Clamping motor targets for joints:")
             for idx in clamped_indices:
@@ -281,8 +352,23 @@ class IsaacPolicyController:
         return True
 
 
-def run_single_policy(sim: sim_utils.SimulationContext, scene: InteractiveScene, policy_path: str, use_gamepad: bool = True) -> None:
-    controller = IsaacPolicyController(scene=scene, policy_path=Path(policy_path), device="cuda", action_scale=0.5, control_dt=sim.get_physics_dt())
+def run_single_policy(
+    sim: sim_utils.SimulationContext,
+    scene: InteractiveScene,
+    policy_path: str,
+    use_gamepad: bool = True,
+    pose_path: Optional[str] = None,
+    debug_gamepad: bool = False,
+    suppress_clamp_warnings: bool = False,
+) -> None:
+    controller = IsaacPolicyController(
+        scene=scene,
+        policy_path=Path(policy_path),
+        device="cuda",
+        action_scale=0.5,
+        control_dt=sim.get_physics_dt(),
+        suppress_clamp_warnings=suppress_clamp_warnings,
+    )
 
     sim_dt = sim.get_physics_dt()
     lin_vel_z = 0.0  # forward/back
@@ -305,6 +391,42 @@ def run_single_policy(sim: sim_utils.SimulationContext, scene: InteractiveScene,
         except Exception as e:
             print(f"[WARN] Gamepad init failed: {e}. Continuing without gamepad...")
             gamepad = None
+    elif debug_gamepad:
+        print("[WARN] --debug-gamepad specified but gamepad disabled with --no-gamepad")
+
+    # Optional: load and apply initial pose
+    initial_pose: Optional[dict] = None
+    name_to_index: Optional[Dict[str, int]] = None
+    if pose_path is not None:
+        try:
+            initial_pose = load_pose_json(pose_path)
+            name_to_index = build_joint_name_to_index_map(scene["Robot"])
+            apply_pose(scene, initial_pose, name_to_index, zero_velocities=True)
+            print(f"[INFO] Applied initial pose from: {pose_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to apply initial pose '{pose_path}': {e}")
+
+    # Keyboard setup for reset
+    input_interface = carb.input.acquire_input_interface()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    keys_pressed = {"R": False}
+
+    def on_keyboard_event(event):
+        nonlocal keys_pressed, initial_pose, name_to_index
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            key = event.input.name
+            if key == "R" and not keys_pressed["R"]:
+                keys_pressed["R"] = True
+                if initial_pose is not None and name_to_index is not None:
+                    print("[INFO] Resetting robot to initial pose (zero velocities)...")
+                    apply_pose(scene, initial_pose, name_to_index, zero_velocities=True)
+                else:
+                    print("[WARN] No initial pose loaded; provide --pose to enable reset.")
+        elif event.type == carb.input.KeyboardEventType.KEY_RELEASE:
+            if event.input.name in keys_pressed:
+                keys_pressed[event.input.name] = False
+
+    keyboard_subscription = input_interface.subscribe_to_keyboard_events(keyboard, on_keyboard_event)
 
     print("[INFO] Running single-policy Isaac controller")
     print("\n" + "=" * 60)
@@ -316,15 +438,30 @@ def run_single_policy(sim: sim_utils.SimulationContext, scene: InteractiveScene,
     print(f"  - Acceleration spike: Max {controller._max_acceleration:.1f} rad/s²")
     print("\nLOUD warnings will appear if policy would trigger safety shutoff!")
     print("=" * 60 + "\n")
+    if debug_gamepad:
+        print("[DEBUG] Gamepad debug enabled: printing raw (v_x, v_y, omega_z) and mapped (lin_vel_z, lin_vel_y, ang_vel_x) every 20 steps")
     step = 0
     while simulation_app.is_running():
         # Update velocity commands from gamepad if available
         if gamepad is not None:
             cmd = gamepad.advance()  # (v_x, v_y, omega_z)
+            raw_vx = float(cmd[0].item())
+            raw_vy = float(cmd[1].item())
+            raw_omega = float(cmd[2].item())
+            # Clamp to configured ranges
+            vx = _clamp(raw_vx, CMD_MIN_VX, CMD_MAX_VX)
+            vy = _clamp(raw_vy, CMD_MIN_VY, CMD_MAX_VY)
+            omega = _clamp(raw_omega, CMD_MIN_OMEGA_Z, CMD_MAX_OMEGA_Z)
             # Map to training convention used in standalone (z, y, x)
-            lin_vel_z = float(cmd[0].item())
-            lin_vel_y = float(cmd[1].item())
-            ang_vel_x = float(cmd[2].item())
+            lin_vel_z = vx
+            lin_vel_y = vy
+            ang_vel_x = omega
+            if debug_gamepad and (step % 20 == 0):
+                print(
+                    f"[DEBUG] Gamepad raw: v_x={raw_vx:.3f}, v_y={raw_vy:.3f}, omega_z={raw_omega:.3f} -> "
+                    f"clamped: v_x={vx:.3f}, v_y={vy:.3f}, omega_z={omega:.3f} -> "
+                    f"mapped: lin_vel_z={lin_vel_z:.3f}, lin_vel_y={lin_vel_y:.3f}, ang_vel_x={ang_vel_x:.3f}"
+                )
 
         obs = controller.get_observation(lin_vel_z, lin_vel_y, ang_vel_x)
         targets = controller.get_targets_isaac(obs)
@@ -337,8 +474,22 @@ def run_single_policy(sim: sim_utils.SimulationContext, scene: InteractiveScene,
         scene.update(sim_dt)
         step += 1
 
+    # Cleanup keyboard subscription
+    try:
+        input_interface.unsubscribe_to_keyboard_events(keyboard, keyboard_subscription)
+    except Exception:
+        pass
+
 
 def main():
+    parser = argparse.ArgumentParser(description="Run policy in Isaac with explicit initial pose and reset.")
+    parser.add_argument("--policy", type=str, default="scripts/experiments/policy.pt", help="Path to policy .pt file")
+    parser.add_argument("--pose", type=str, default="assets/default-pose.json", help="Path to pose JSON for initial/reset pose")
+    parser.add_argument("--no-gamepad", action="store_true", help="Disable SE2 gamepad")
+    parser.add_argument("--debug-gamepad", action="store_true", help="Print gamepad inputs and mapped commands (throttled)")
+    parser.add_argument("--no-clamp-warnings", action="store_true", help="Silence clamping warnings for motor targets")
+    args = parser.parse_args()
+
     sim_cfg = sim_utils.SimulationCfg(device="cuda")
     sim = sim_utils.SimulationContext(sim_cfg)
     sim.set_camera_view([3.5, 0.0, 3.2], [0.0, 0.0, 0.5])
@@ -351,9 +502,19 @@ def main():
     print("[INFO]: Setup complete...")
 
     # Start with one policy to validate
-    policy_path = "sim2sim_mj/policies/policy_crawl.pt"
+    policy_path = args.policy
+    pose_path = args.pose
     print(f"[INFO]: Using policy: {policy_path}")
-    run_single_policy(sim, scene, policy_path)
+    print(f"[INFO]: Using pose: {pose_path}")
+    run_single_policy(
+        sim,
+        scene,
+        policy_path,
+        use_gamepad=(not args.no_gamepad),
+        pose_path=pose_path,
+        debug_gamepad=args.debug_gamepad,
+        suppress_clamp_warnings=args.no_clamp_warnings,
+    )
 
 
 if __name__ == "__main__":

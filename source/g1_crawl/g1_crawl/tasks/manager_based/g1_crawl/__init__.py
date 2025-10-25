@@ -97,12 +97,23 @@ gym.register(
 )
 
 
+# gym.register(
+#     id="g1-crawl-rough",
+#     entry_point="isaaclab.envs:ManagerBasedRLEnv",
+#     disable_env_checker=True,
+#     kwargs={
+#         "env_cfg_entry_point": f"{__name__}.g1_crawl_proc_env_cfg_rough:G1CrawlProcEnvCfg",
+#         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
+#     },
+# )
+
+
 gym.register(
-    id="g1-crawl-rough",
+    id="g1-locomotion",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_crawl_proc_env_cfg_rough:G1CrawlProcEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.g1_locomotion_env_cfg:G1LocomotionEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
     },
 )

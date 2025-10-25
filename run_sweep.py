@@ -11,7 +11,7 @@ from pathlib import Path
 # =============================================================================
 
 # Auto-suspend configuration
-AUTO_SUSPEND = True  # Set to True to automatically suspend after all sweeps complete
+AUTO_SUSPEND = False  # Set to True to automatically suspend after all sweeps complete
 
 # Define multiple sweeps to run in sequence
 # Each entry will run as a complete sweep with its own experiment name and video compilation
@@ -35,36 +35,56 @@ SWEEP_QUEUE = [
     # },
 
 
-    {
-        "task_name": "g1-stand",
-        "experiment_name": "g1-stand",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "sweep_params": {
-             "env.rewards.pose_deviation_all.weight": [ -0.3, .1],
-             "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
-
-        },
-        "sweep_param_sets": [],
-        "exclude_rules": [],
-    },
-    #     {
+    # {
     #     "task_name": "g1-shamble",
     #     "experiment_name": "g1-shamble-sweep",  # Nanoid will be auto-appended
     #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
     #     "sweep_params": {
     #         # "env.rewards.leg_joint_vel_l2.weight": [-1e-3, 0.0],
-    #         "env.rewards.feet_air_time.weight": [3.,1.,0.3],
+    #         "env.rewards.flat_orientation_l2.weight": [0.3, 0.0, -0.3],
+    #         # "env.rewards.pose_deviation_hip.weight": [-0.1, -0.3],
+    #         # "env.rewards.pose_deviation_knees.weight": [0.0, -0.3],
+    #         # "env.rewards.feet_air_time.weight": [0.1, 1.0, 3.0],
+
     #         # "env.rewards.feet_slide.params.threshold": [1e-2, 0.0],
     #         # "env.rewards.leg_joint_vel_l2.weight": [ 1e-3],
     #         # "env.rewards.action_rate_l2.weight": [ 1e-3],
     #         # "env.rewards.feet_slide.params.threshold": [1e-3],
-    #         "env.rewards.feet_air_time.params.threshold": [0.2, 0.10]
     #         # "env.rewards.pose_deviation_knees.weight": [0.0, -0.1],
     #         # "env.rewards.dof_acc_l2.weight": [0.0, -1e-2],
     #     },
     #     "sweep_param_sets": [],
     #     "exclude_rules": [],
     # },
+
+    {
+        "task_name": "g1-quad",
+        "experiment_name": "g1-quad-sweep",  # Nanoid will be auto-appended
+        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+        "resume_checkpoint": None,  # Optionally set to checkpoint path, e.g., "model_2599.pt"
+        "sweep_params": {
+            #  "env.rewards.pose_deviation_all.weight": [ -0.3, -0.1],
+            #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+
+        },
+        "sweep_param_sets": [],
+        "exclude_rules": [],
+    },
+
+    {
+        "task_name": "g1-locomotion",
+        "experiment_name": "g1-locomotion-sweep",  # Nanoid will be auto-appended
+        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+        "resume_checkpoint": None,  # Optionally set to checkpoint path, e.g., "model_2599.pt"
+        "sweep_params": {
+            "env.terminations.base_contact.params.sensor_cfg.body_names": ["torso_link","__OMIT__"],
+            #  "env.rewards.pose_deviation_all.weight": [ -0.3, -0.1],
+            #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+
+        },
+        "sweep_param_sets": [],
+        "exclude_rules": [],
+    },
         # {
     #     "task_name": "g1-crawl-start",
     #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
@@ -409,6 +429,11 @@ def run_single_sweep(sweep_config, sweep_number, total_sweeps):
     
     # Define base commands
     TRAIN_BASE_CMD = ["python", "scripts/rsl_rl/train.py","--task", TASK_NAME, "--headless"]
+    # Optionally resume training from a checkpoint if provided in sweep config
+    RESUME_CHECKPOINT = sweep_config.get("resume_checkpoint")
+    if RESUME_CHECKPOINT:
+        TRAIN_BASE_CMD += ["--resume_checkpoint", str(RESUME_CHECKPOINT)]
+
     PLAY_BASE_CMD = ["python", "scripts/rsl_rl/play.py", "--task", TASK_NAME, "--headless", "--video", "--video_length", "200", "--enable_cameras"]
 
     # Create per-sweep output directory and log file with timestamp
