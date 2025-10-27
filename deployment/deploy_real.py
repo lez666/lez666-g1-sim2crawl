@@ -12,6 +12,7 @@ from utils import (
     default_pos,
     crawl_angles,
     default_angles_config,
+    stand_angles_config,
     get_gravity_orientation,
     action_scale,
     RESTRICTED_JOINT_RANGE,
@@ -55,6 +56,15 @@ POLICY_PATHS = [
     "policies/policy_crawl.pt",
     # "policies/policy_shamble_start.pt",
 ]
+
+# Explicit mapping of policy filenames to default joint set names
+# Valid values: "stand", "crawl"
+POLICY_DEFAULTS = {
+    "policies/policy_shamble.pt": "stand",
+    "policies/policy_crawl_start.pt": "stand",
+    "policies/policy_crawl.pt": "crawl",
+    # "policies/policy_shamble_start.pt": "stand",
+}
 
 # Safety flag: set to False to test state logic without moving motors
 ENABLE_MOTOR_COMMANDS = True
@@ -281,6 +291,16 @@ class Controller:
         # Policy cycling
         self._current_policy_idx = 0
         self._policy_paths = POLICY_PATHS  # Store for display
+        # Validate default mapping and apply for initial policy
+        self._policy_defaults = dict(POLICY_DEFAULTS)
+        init_policy = self._policy_paths[self._current_policy_idx]
+        if init_policy not in self._policy_defaults:
+            available = ", ".join(sorted(self._policy_defaults.keys())) if self._policy_defaults else "(none)"
+            raise KeyError(f"Initial policy '{init_policy}' missing from POLICY_DEFAULTS. Available: {available}")
+        for p in self._policy_paths:
+            if p not in self._policy_defaults:
+                raise KeyError(f"Policy '{p}' missing from POLICY_DEFAULTS")
+        self._apply_default_set_for_policy(init_policy)
         
         # Transition state for smooth lerping between modes
         self._in_transition = False
@@ -300,6 +320,16 @@ class Controller:
             kp_multiplier_upper=self.kp_multiplier_upper,
             kd_multiplier_upper=self.kd_multiplier_upper,
         )
+
+    def _apply_default_set_for_policy(self, policy_path: str):
+        set_name = self._policy_defaults.get(policy_path)
+        if set_name == "stand":
+            self.default_angles_array = np.array(stand_angles_config)
+        elif set_name == "crawl":
+            self.default_angles_array = np.array(default_angles_config)
+        else:
+            valid = ", ".join(["stand", "crawl"]) 
+            raise KeyError(f"Invalid default set '{set_name}' for policy '{policy_path}'. Valid: {valid}")
 
     def adjust_gains(self, group: str, kind: str, delta: float):
         if group == "legs":
@@ -567,14 +597,20 @@ class Controller:
                 # Loop back to first policy after last
                 self._current_policy_idx = next_idx % num_policies
                 self.policy.set_policy_index(self._current_policy_idx)
-                print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+                new_policy = self._policy_paths[self._current_policy_idx]
+                print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {new_policy}")
+                # Apply corresponding default set immediately
+                self._apply_default_set_for_policy(new_policy)
                 self._safety_initialized = False
             else:
                 # Stop at last policy, don't loop back
                 if next_idx < num_policies:
                     self._current_policy_idx = next_idx
                     self.policy.set_policy_index(self._current_policy_idx)
-                    print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+                    new_policy = self._policy_paths[self._current_policy_idx]
+                    print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {new_policy}")
+                    # Apply corresponding default set immediately
+                    self._apply_default_set_for_policy(new_policy)
                     self._safety_initialized = False
                 else:
                     print(f"A PRESSED: Already at last policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
@@ -776,8 +812,7 @@ class Controller:
         rx = 0.0 if abs(rx) < deadzone else rx
         
         # Clip to [-1, 1] and scale by max velocities
-        # Note: Negating for intuitive control (up=forward, left=left, right=rotate-right)
-        lin_vel_z = -np.clip(ly, -1.0, 1.0) * MAX_LIN_VEL_FORWARD
+        lin_vel_z = np.clip(ly, -1.0, 1.0) * MAX_LIN_VEL_FORWARD
         lin_vel_y = -np.clip(lx, -1.0, 1.0) * MAX_LIN_VEL_LATERAL
         ang_vel_x = -np.clip(rx, -1.0, 1.0) * MAX_ANG_VEL_YAW
         

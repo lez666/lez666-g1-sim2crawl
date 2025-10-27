@@ -54,13 +54,13 @@ CONFIG = {
     "use_gamepad": True,
     
     # Max forward/backward velocity (m/s) - scaled by left stick Y
-    "max_lin_vel": 1.5,
+    "max_lin_vel": 1.0,
     
     # Max lateral velocity (m/s) - scaled by left stick X
-    "max_lat_vel": 1.5,
+    "max_lat_vel": 1.0,
     
     # Max angular velocity (rad/s) - scaled by right stick X  
-    "max_ang_vel": 1.5,
+    "max_ang_vel": 1.0,
     
     # Buttons: 0=A (bottom), 1=B (right), 2=X (left), 3=Y (top)
     # Option 1 (recommended): Use a single button to cycle through policies in order
@@ -68,9 +68,18 @@ CONFIG = {
         "policies/policy_shamble.pt",
         "policies/policy_crawl_start.pt",
         "policies/policy_crawl.pt",
-        "policies/policy_shamble_start.pt",
+        # "policies/policy_shamble_start.pt",
     ],
     "cycle_button": 0,  # A button
+    
+    # Explicit mapping of policy filenames to which default joint set to use
+    # Valid values: "stand", "crawl"
+    "policy_defaults": {
+        "policies/policy_shamble.pt": "stand",
+        "policies/policy_crawl_start.pt": "stand",
+        "policies/policy_crawl.pt": "crawl",
+        # "policies/policy_shamble_start.pt": "stand",
+    },
     
     # Exit button (9 = Start/Menu button on most controllers)
     "exit_button": 6,
@@ -156,6 +165,62 @@ TRAINING_DEFAULT_ANGLES = {
     "right_elbow_joint": -0.3124709677419355,
     "right_wrist_roll_joint": 0.0,
 }
+
+# Stand pose defaults (match G1_STAND_CFG.init_state.joint_pos in source/g1_crawl/.../g1.py)
+# Fully expanded per-joint map in MuJoCo joint order
+STAND_DEFAULT_ANGLES = {
+    # Hips
+    "left_hip_pitch_joint": -0.20,
+    "right_hip_pitch_joint": -0.20,
+    "left_hip_roll_joint": 0.0,
+    "right_hip_roll_joint": 0.0,
+    "left_hip_yaw_joint": 0.0,
+    "right_hip_yaw_joint": 0.0,
+    # Knees
+    "left_knee_joint": 0.42,
+    "right_knee_joint": 0.42,
+    # Ankles
+    "left_ankle_pitch_joint": -0.23,
+    "right_ankle_pitch_joint": -0.23,
+    "left_ankle_roll_joint": 0.0,
+    "right_ankle_roll_joint": 0.0,
+    # Waist
+    "waist_yaw_joint": 0.0,
+    # Shoulders
+    "left_shoulder_pitch_joint": 0.35,
+    "right_shoulder_pitch_joint": 0.35,
+    "left_shoulder_roll_joint": 0.16,
+    "right_shoulder_roll_joint": -0.16,
+    "left_shoulder_yaw_joint": 0.0,
+    "right_shoulder_yaw_joint": 0.0,
+    # Elbows
+    "left_elbow_joint": 0.87,
+    "right_elbow_joint": 0.87,
+    # Wrists
+    "left_wrist_roll_joint": 0.0,
+    "right_wrist_roll_joint": 0.0,
+}
+
+# Map default set names to angle dicts
+DEFAULT_SET_MAP: dict[str, dict[str, float]] = {
+    "stand": STAND_DEFAULT_ANGLES,
+    "crawl": TRAINING_DEFAULT_ANGLES,
+}
+
+def resolve_default_joint_positions(policy_path: Path, policy_defaults_map: dict[str, str]) -> dict[str, float]:
+    """Return default joint positions for a policy based on explicit mapping.
+
+    Requires an explicit entry in policy_defaults_map; fails loudly if missing.
+    """
+    key = str(policy_path)
+    if key not in policy_defaults_map:
+        available = ", ".join(sorted(policy_defaults_map.keys())) if policy_defaults_map else "(none)"
+        raise KeyError(f"No default set mapped for policy '{key}'. Available mappings: {available}")
+    set_name = str(policy_defaults_map[key])
+    if set_name not in DEFAULT_SET_MAP:
+        valid = ", ".join(sorted(DEFAULT_SET_MAP.keys()))
+        raise KeyError(f"Invalid default set '{set_name}' for policy '{key}'. Valid: {valid}")
+    return DEFAULT_SET_MAP[set_name]
 
 # Joint limits (min, max) in MuJoCo joint order - matching RESTRICTED_JOINT_RANGE from deploy_real.py
 JOINT_LIMITS = {
@@ -541,10 +606,12 @@ class StandalonePolicyController:
         kd_multiplier_legs: float = 1.0,
         kp_multiplier_upper: float = 1.0,
         kd_multiplier_upper: float = 1.0,
+        policy_defaults_map: dict[str, str] | None = None,
     ):
         self.mj_model = mj_model
         self.device = device
         self.action_scale = action_scale
+        self.policy_defaults_map = dict(policy_defaults_map or {})
         
         # Gain multipliers (group-based)
         self.kp_multiplier_legs = float(kp_multiplier_legs)
@@ -577,17 +644,7 @@ class StandalonePolicyController:
         # Get default joint positions
         if training_defaults is None:
             training_defaults = TRAINING_DEFAULT_ANGLES
-        
-        default_pos_mujoco = []
-        for joint_name in self.joint_names:
-            if joint_name in training_defaults:
-                default_pos_mujoco.append(training_defaults[joint_name])
-            else:
-                print(f"[WARN] Joint {joint_name} not in training defaults, using 0.0")
-                default_pos_mujoco.append(0.0)
-        
-        self.default_joint_pos_mujoco = torch.tensor(default_pos_mujoco, device=device, dtype=torch.float32)
-        self.default_joint_pos_pytorch = self._remap_mujoco_to_pytorch(self.default_joint_pos_mujoco)
+        self._update_default_positions_from_map(training_defaults)
         
         # Get joint limits
         joint_limits_lower = []
@@ -630,6 +687,18 @@ class StandalonePolicyController:
         # Initialize PD gain scaling from model actuators
         self._init_actuator_gain_scaling()
         self._apply_gain_multipliers()
+
+    def _update_default_positions_from_map(self, defaults_map: dict[str, float]) -> None:
+        """Rebuild default joint position tensors from a name->value map."""
+        default_pos_mujoco: list[float] = []
+        for joint_name in self.joint_names:
+            if joint_name in defaults_map:
+                default_pos_mujoco.append(float(defaults_map[joint_name]))
+            else:
+                print(f"[WARN] Joint {joint_name} not in defaults map, using 0.0")
+                default_pos_mujoco.append(0.0)
+        self.default_joint_pos_mujoco = torch.tensor(default_pos_mujoco, device=self.device, dtype=torch.float32)
+        self.default_joint_pos_pytorch = self._remap_mujoco_to_pytorch(self.default_joint_pos_mujoco)
 
     def _init_actuator_gain_scaling(self) -> None:
         """Capture base KP/KD from MuJoCo actuators and group into legs/upper."""
@@ -719,6 +788,10 @@ class StandalonePolicyController:
         self._policy = torch.load(policy_path, map_location=self.device, weights_only=False)
         self._policy.eval()
         self._current_policy_path = policy_path
+        
+        # Update default joint positions according to new policy (explicit mapping)
+        new_defaults = resolve_default_joint_positions(policy_path, self.policy_defaults_map)
+        self._update_default_positions_from_map(new_defaults)
         
         # Reset last actions to avoid discontinuities
         self.last_actions_pytorch = torch.zeros(self.num_policy_joints, device=self.device, dtype=torch.float32)
@@ -1028,16 +1101,32 @@ def main():
     
     # Create controller
     print("[INFO] Creating policy controller...")
+    # Load explicit mapping for defaults
+    policy_defaults_map = CONFIG.get("policy_defaults", {}) or {}
+    if not isinstance(policy_defaults_map, dict):
+        raise TypeError("CONFIG['policy_defaults'] must be a dict of {policy_path: default_set}")
+    # Validate presence for initial policy and any policies in the cycle
+    init_key = str(policy_path)
+    if init_key not in policy_defaults_map:
+        raise KeyError(f"Initial policy '{init_key}' missing from CONFIG['policy_defaults']")
+    for p in policy_cycle or []:
+        if str(p) not in policy_defaults_map:
+            raise KeyError(f"Policy '{p}' in policy_cycle missing from CONFIG['policy_defaults']")
+    
+    # Choose per-policy default joint positions (explicit)
+    init_defaults = resolve_default_joint_positions(policy_path, policy_defaults_map)
+    
     controller = StandalonePolicyController(
         policy_path=policy_path,
         mj_model=mj_model,
         device=device,
         action_scale=action_scale,
-        training_defaults=TRAINING_DEFAULT_ANGLES,
+        training_defaults=init_defaults,
         kp_multiplier_legs=kp_multiplier_legs,
         kd_multiplier_legs=kd_multiplier_legs,
         kp_multiplier_upper=kp_multiplier_upper,
         kd_multiplier_upper=kd_multiplier_upper,
+        policy_defaults_map=policy_defaults_map,
     )
     
     # Launch viewer

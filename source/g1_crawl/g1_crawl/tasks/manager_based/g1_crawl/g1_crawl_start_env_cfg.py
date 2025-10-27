@@ -26,13 +26,18 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from . import mdp
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
-from .g1 import G1_CFG
+from .g1 import G1_STAND_CFG
+
+##
+# Constants
+##
+
+CRAWL_POSE_PATH = "assets/crawl-pose.json"
+
 
 ##
 # Scene definition
 ##
-
-DEFAULT_POSE_PATH = "assets/crawl-pose.json"
 
 
 @configclass
@@ -58,7 +63,7 @@ class G1CrawlStartSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
     )
     # robots
-    robot: ArticulationCfg = MISSING
+    robot: ArticulationCfg = G1_STAND_CFG.copy().replace(prim_path="{ENV_REGEX_NS}/Robot")
     # sensors
     # height_scanner = RayCasterCfg(
     #     prim_path="{ENV_REGEX_NS}/Robot/base",
@@ -83,18 +88,17 @@ class G1CrawlStartSceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    base_velocity = mdp.CrawlVelocityCommandCfg(
+    base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0,10.0),
+        resampling_time_range=(10.0, 10.0),
         rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=False,
+        heading_control_stiffness=0.5,
         debug_vis=True,
-        ranges=mdp.CrawlVelocityCommandCfg.Ranges(
-            heading=(0.0,0.0),
-            # Crawling fields used by the command implementation
-            lin_vel_z=(0.0, 1.5),
-            lin_vel_y=(0.,0.),
-            ang_vel_x=(-1.0, 1.0)
-        )
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-3.14, 3.14)
+        ),
     )
 
 
@@ -116,7 +120,9 @@ class ObservationsCfg:
             func=mdp.projected_gravity,
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
+        # boolean_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "boolean_command"})
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action_with_log)
@@ -136,6 +142,7 @@ class ObservationsCfg:
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
         )
+        # boolean_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "boolean_command"})
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
@@ -220,25 +227,46 @@ class EventCfg:
         },
     )
 
+    reset_base = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        mode="reset",
+        params={
+            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            "velocity_range": {
+                "x": (-0.05, 0.05),
+                "y": (-0.05, 0.05),
+                "z": (-0.05, 0.05),
+                "roll": (-0.05, 0.05),
+                "pitch": (-0.05, 0.05),
+                "yaw": (-0.05, 0.05),
+            },
+        },
+    )
 
-    # reset
-    # Curriculum-aware pose array reset with progressive difficulty
-    # Uses pose_viewer.py format (pose array with base_pos/base_rpy/joints)
-    
-    # STAND2CRAWL configuration (forward through sorted poses)
-    # reset_base = EventTerm(
+
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_scale,
+        mode="reset",
+        params={
+            "position_range": (0.9, 1.1),
+            "velocity_range": (0.0, 0.0),
+        },
+    )
+
+
+    # reset_robot = EventTerm(
     #     func=mdp.reset_from_pose_array_with_curriculum,
     #     mode="reset",
     #     params={
-    #         "json_path": "assets/sorted-poses-rc2.json",
+    #         "json_path": "assets/sorted-poses-rc3.json",
             
-    #         # Curriculum parameters: start with standing, expand to include crawling
-    #         "frame_range": (0, 0),  # Start with pose 0 only - curriculum will expand this
-    #         "home_frame": 0,        # Pose 0 (standing) is the start anchor
-    #         "home_frame_prob": 0.3, # 30% always sample standing pose
+    #         # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+    #         "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
+    #         "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+    #         "home_frame_prob": 0.1,       # 30% always sample crawling pose
             
-    #         # Optional: Add end anchor for dual-anchor curriculum (starts at 0, ramped up by curriculum)
-    #         "end_home_frame": 5794,       # Pose 5794 (crawling) is the end anchor
+    #         # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
     #         "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
     #         # Curriculum will increase this to ~0.1 in final stages
 
@@ -249,278 +277,60 @@ class EventCfg:
     #             "z": (-0.05, 0.05),
     #             "roll": (-0.10, 0.10),
     #             "pitch": (-0.10, 0.10),
-    #             "yaw": (-0.10, 0.10),
+    #             "yaw": (-3.14, 3.14),
     #         },
     #         # Small random root velocity at reset (linear m/s, angular rad/s)
     #         "velocity_range": {
-    #             "x": (-0.20, 0.20),
-    #             "y": (-0.20, 0.20),
-    #             "z": (-0.2, 0.2),
-    #             "roll": (-0.30, 0.30),
-    #             "pitch": (-0.30, 0.30),
-    #             "yaw": (-0.30, 0.30),
+    #             "x": (-0.05, 0.05),
+    #             "y": (-0.05, 0.05),
+    #             "z":(-0.05, 0.05),
+    #             "roll": (-0.05, 0.05),
+    #             "pitch":(-0.05, 0.05),
+    #             "yaw":(-0.05, 0.05)
     #         },
-    #         "position_range": (0.9, 1.1),
+    #         "position_range": (0.95, 1.05),
     #         "joint_velocity_range": (0.0, 0.0),
     #     },
-    # )
-
-    reset_base = EventTerm(
-        func=mdp.reset_from_pose_array_with_curriculum,
-        mode="reset",
-        params={
-            "json_path": "assets/sorted-poses-rc3.json",
-            
-            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
-            "frame_range": (4500,5796),  # Start with last pose only - curriculum will expand backward
-            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
-            "home_frame_prob": 0.1,       # 30% always sample crawling pose
-            
-            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
-            "end_home_frame": 5796,          # Pose 0 (standing) is the end anchor
-            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
-            # Curriculum will increase this to ~0.1 in final stages
-
-            # Small random offsets on root pose at reset (position in meters, angles in radians)
-            "pose_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "z": (-0.1, 0.1),
-                "roll": (-0.1, 0.1),
-                "pitch": (-0.1, 0.1),
-                "yaw": (-3.14, 3.14),
-            },
-            # Small random root velocity at reset (linear m/s, angular rad/s)
-            "velocity_range": {
-                "x":  (-0.1, 0.1),
-                "y":  (-0.1, 0.1),
-                "z": (-0.1, 0.1),
-                "roll":  (-0.1, 0.1),
-                "pitch": (-0.1, 0.1),
-                "yaw": (-0.1, 0.1),
-            },
-            "position_range": (0.9, 1.1),
-            "joint_velocity_range": (-0.1, 0.1)
-        },
-    )
-    
-    # reset_base = EventTerm(
-    #     func=mdp.reset_to_pose_json,
-    #     mode="reset",
-    #     params={
-    #         "json_path": "assets/default-pose.json",
-    #         # Root pose noise (position in meters, angles in radians)
-    #         "pose_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "yaw": (-3.14, 3.14),
-    #         },
-    #         "velocity_range": {
-    #             "x": (-0.1, 0.1),
-    #             "y": (-0.1, 0.1),
-    #             "z": (-0.1, 0.1),
-    #             "roll": (-0.1, 0.1),
-    #             "pitch": (-0.1, 0.1),
-    #             "yaw": (-0.1, 0.1)
-    #         },
-
-    #         "position_range": (0.9, 1.1),
-    #         # Joint velocity scaling (multiplies joint velocities, 0 means no velocity)
-    #         "joint_velocity_range": (0.0, 0.0),
-    #     },
-    # )
-
-    # CRAWL2STAND configuration (reverse through sorted poses) - EXAMPLE
-    # Uncomment and use this for crawl2stand training:
-    # reset_base = EventTerm(
-    #     func=mdp.reset_from_pose_array_with_curriculum,
-    #     mode="reset",
-    #     params={
-    #         "json_path": "assets/animation_mocap_rc0_poses_sorted.json",
-    #         
-    #         # Curriculum parameters: start with crawling, expand to include standing
-    #         "frame_range": (5794, 5794),  # Start with last pose only - curriculum will expand backward
-    #         "home_frame": 5794,           # Pose 5794 (crawling) is the start anchor
-    #         "home_frame_prob": 0.3,       # 30% always sample crawling pose
-    #         
-    #         # Optional: Add standing as end anchor
-    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
-    #         "end_home_frame_prob": 0.1,   # 10% always sample standing pose
-    #         # Now: 30% crawling, 10% standing, 60% from curriculum range
-    #         
-    #         # ... same pose_range, velocity_range, etc. ...
-    #     },
-    # )
-    # reset_base = EventTerm(
-    #     func=mdp.reset_from_animation,
-    #     mode="reset",
-    #     params={},
     # )
 
 
     # push_robot = EventTerm(
     #     func=mdp.push_by_setting_velocity_with_viz,
     #     mode="interval",
-    #     interval_range_s=(1000,1000),
+    #     interval_range_s=(3.0, 5.0),
     #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     # )
-# @configclass
-# class CurriculumCfg:
-#     """Curriculum terms for the MDP."""
 
-
-
-@configclass
-class CurriculumCfg:
-    """Curriculum terms for progressive difficulty."""
-    
-    # Expand pose array range from easy to hard poses over training
-    # animation_difficulty = CurrTerm(
-    #     func=mdp.modify_term_cfg,
-    #     params={
-    #         "address": "events.reset_base.params.frame_range",
-    #         "modify_fn": mdp.expand_frame_range_linear,
-    #         "modify_params": {
-    #             "total_frames": 5795,  # Total poses in animation_mocap_rc0_poses_sorted.json
-    #             "start_frames": 1,     # Start with just pose 0 (home pose)
-    #             "warmup_steps": 24*2500, # Reach all poses by 50k steps (~3.5M env steps with 4096 envs)
-    #         }
-    #     }
-    # )
-    
-    # # Ramp up end anchor probability in final training stages
-    # end_anchor_difficulty = CurrTerm(
-    #     func=mdp.modify_term_cfg,
-    #     params={
-    #         "address": "events.reset_base.params.end_home_frame_prob",
-    #         "modify_fn": mdp.ramp_end_anchor_probability,
-    #         "modify_params": {
-    #             "target_prob": 0.1,   # Final probability (10% of resets from crawling pose)
-    #             "start_step": 24*2000,  # Start ramping at 80% of warmup
-    #             "end_step": 24*2500,    # Reach target at end of warmup
-    #         }
-    #     }
-    # )
-
-    # Ramp up belly contact penalty over training
-    # belly_penalty_ramp = CurrTerm(
-    #     func=mdp.modify_term_cfg,
-    #     params={
-    #         "address": "rewards.bellyhead_drag_penalty.weight",
-    #         "modify_fn": mdp.ramp_weight_linear,
-    #         "modify_params": {
-    #             "initial_weight": -10.0,      # Start with no penalty
-    #             "target_weight": -100.0,     # Ramp to full penalty
-    #             "start_step": 24*1000,            # Start ramping from beginning
-    #             "end_step": 24*2500,        # Reach full penalty at same time as animation difficulty
-    #         }
-    #     }
-    # )
-    
-    # # Push event curriculum (existing)
-    # push_event_freq = CurrTerm(
-    #     func=mdp.modify_term_cfg,
-    #     params={
-    #         "address": "events.push_robot.interval_range_s",
-    #         "modify_fn": mdp.override_value,
-    #         "modify_params": {"value": (3, 10), "num_steps": 36000}
-    #     }
-    # )
 
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    #orientation
-    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=1.0)
-    
-    # Encourage forward weight shift (COM ahead of feet) to prevent backward falls during transitions
-    # Uses actual center of mass (root_com_pos_w) for accurate physics
-    com_forward_lean = RewTerm(
-        func=mdp.com_forward_of_feet,
-        weight=1.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "feet_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-        },
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4,  params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+            )
+        }
     )
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0001)
 
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-0.3,
-        params={
-            "target_height": 0.22,
-            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
-            # "sensor_cfg": SceneEntityCfg("height_scanner"),
-        },
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-0.0001, params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+            )
+        }
     )
-    
-    pose_deviation_all = RewTerm(
-        func=mdp.pose_json_deviation_l1,
-        weight=-0.3,
-        params={
-            "pose_path": DEFAULT_POSE_PATH,
-            "asset_cfg": SceneEntityCfg("robot")
-        },
-    )
-
-    # no_jumps = RewTerm(
-    #     func=mdp.desired_contacts,
-    #     weight=-3.,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*ankle_roll_link"])},
+    # body_velocity_regularizer = RewTerm(
+    #     func=mdp.body_lin_acc_l2, 
+    #     weight=-0.1,  # Negative weight for penalty
+    #     params={"asset_cfg": SceneEntityCfg("robot")}  # All body parts
     # )
-        
-    # body_lin_acc_l2
-    # joint_acc_l2
-    #contact_forces
-
-    #limits
-    dof_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-    torque_limits = RewTerm(
-        func=mdp.applied_torque_limits,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-
-    #regulatorization
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4)
-    dof_acc_l2 = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-2.0e-7,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-
-    both_feet_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-2.,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-        },
-    )
     
 
-    both_hand_air = RewTerm(
-        func=mdp.both_feet_air,
-        weight=-2.,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wrist_link"),
-        },
-    )
-
-    #pseudo termination
-    # bellyhead_drag_penalty = RewTerm(
-    #     func=mdp.undesired_contacts,
-    #     weight=-10.0,
+    # both_feet_air = RewTerm(
+    #     func=mdp.both_feet_air,
+    #     weight=-0.5,
     #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names= "torso_link",
-    #         ),
-    #         "threshold": 1.0,  # in Newtons (normal force magnitude)
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
     #     },
     # )
 
@@ -536,18 +346,37 @@ class RewardsCfg:
         },
     )
 
-    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=3.)
 
 
+    base_height_l2 = RewTerm(
+        func=mdp.base_height_l2,
+        weight=-3.,
+        params={
+            "target_height": 0.22,
+            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+            # "sensor_cfg": SceneEntityCfg("height_scanner"),
+        },
+    )
+
+    # pose_deviation_all = RewTerm(
+    #     func=mdp.pose_json_deviation_l1_after_delay,
+    #     weight=-1.0,
+    #     params={
+    #         "pose_path": CRAWL_POSE_PATH,
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "delay_s": 1.5,
+    #         "ramp_s": 0.5,
+    #     },
+    # )
+    
 
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
+
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # base_contact = DoneTerm(
-    #     func=mdp.illegal_contact,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
-    # )
+
 
 @configclass
 class G1CrawlStartEnvCfg(ManagerBasedRLEnvCfg):
@@ -561,7 +390,7 @@ class G1CrawlStartEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
+    # curriculum: CurriculumCfg = CurriculumCfg()
 
 
     def __post_init__(self) -> None:
@@ -569,9 +398,8 @@ class G1CrawlStartEnvCfg(ManagerBasedRLEnvCfg):
 
         # general settings
         self.decimation = 4
-        self.episode_length_s = 5.0
+        self.episode_length_s = 20.0 #7.0
         # simulation settings
-        # self.sim.dt = 0.002
         self.sim.dt = 0.005
         # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
 
@@ -580,8 +408,7 @@ class G1CrawlStartEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
 
 # 
-        self.scene.robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
+        # self.scene.robot = G1_STAND_CFG.copy().replace(prim_path="{ENV_REGEX_NS}/Robot")
 
         # update sensor update periods
         if self.scene.contact_forces is not None:
@@ -590,12 +417,4 @@ class G1CrawlStartEnvCfg(ManagerBasedRLEnvCfg):
         # Set terrain to plane and disable height scanning
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
-        # self.scene.height_scanner = None
-        if hasattr(self.terminations, "base_contact"):
-            self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
-
-
-        # if getattr(self.curriculum, "terrain_levels", None) is not None:
-        #     if self.scene.terrain.terrain_generator is not None:
-        #         self.scene.terrain.terrain_generator.curriculum = True
        

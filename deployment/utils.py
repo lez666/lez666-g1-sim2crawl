@@ -91,6 +91,33 @@ default_angles_config = [
     0.0,                   # RightWristRoll
 ]
 
+# Stand defaults (match G1_STAND_CFG.init_state.joint_pos in MuJoCo joint order)
+stand_angles_config = [
+    -0.20,  # LeftHipPitch
+    0.0,    # LeftHipRoll
+    0.0,    # LeftHipYaw
+    0.42,   # LeftKnee
+    -0.23,  # LeftAnklePitch
+    0.0,    # LeftAnkleRoll
+    -0.20,  # RightHipPitch
+    0.0,    # RightHipRoll
+    0.0,    # RightHipYaw
+    0.42,   # RightKnee
+    -0.23,  # RightAnklePitch
+    0.0,    # RightAnkleRoll
+    0.0,    # WaistYaw
+    0.35,   # LeftShoulderPitch
+    0.16,   # LeftShoulderRoll
+    0.0,    # LeftShoulderYaw
+    0.87,   # LeftElbow
+    0.0,    # LeftWristRoll
+    0.35,   # RightShoulderPitch
+    -0.16,  # RightShoulderRoll
+    0.0,    # RightShoulderYaw
+    0.87,   # RightElbow
+    0.0,    # RightWristRoll
+]
+
 crawl_angles = [
     -1.5814894736842104,
     2.293456140350877,

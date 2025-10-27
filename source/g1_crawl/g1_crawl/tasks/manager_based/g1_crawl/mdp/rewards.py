@@ -1643,3 +1643,70 @@ def track_lin_vel_xy_yaw_frame_exp(
 #     asset = env.scene[asset_cfg.name]
 #     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
 #     return torch.exp(-ang_vel_error / std**2)
+def _steps_since_reset(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Return per-env steps since episode reset as a tensor on the sim device."""
+    # Isaac Lab commonly exposes one of these names:
+    for name in ("episode_step_counter", "episode_step_count", "episode_length_buf"):
+        if hasattr(env, name):
+            t = getattr(env, name)
+            # ensure it's a 1-D tensor [num_envs] on the right device/dtype
+            return t.to(device=env.device)
+    raise AttributeError(
+        "Could not find a per-env steps-since-reset counter on env. "
+        "Try exposing `episode_step_counter` (int32/64, shape [num_envs])."
+    )
+
+def _step_dt(env: ManagerBasedRLEnv) -> float:
+    # Isaac Lab usually exposes env.step_dt
+    if hasattr(env, "step_dt"):
+        return float(env.step_dt)
+    # fallback if your build differs
+    if hasattr(env, "sim") and hasattr(env.sim, "dt"):
+        return float(env.sim.dt)
+    raise AttributeError("Could not determine step dt (looked for env.step_dt and env.sim.dt).")
+
+def pose_json_deviation_l1_after_delay(
+    env: ManagerBasedRLEnv,
+    pose_path: str = "assets/default-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    delay_s: float = 1.0,           # time before this term activates
+    ramp_s: float = 0.0,            # optional: smoothly ramp in over this many seconds
+) -> torch.Tensor:
+    """L1 penalty for joint deviations from a JSON pose, activated after a time delay.
+
+    Before `delay_s`, this returns 0. Between `delay_s` and `delay_s + ramp_s`, the penalty
+    linearly ramps in (if ramp_s > 0). After that, full strength.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Build target vector in joint order (cache inside your helper if desired)
+    target_full = _get_full_target_vector(pose_path, asset)
+
+    # Gather joint positions in the selected order
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    # ensure target is on same device/dtype
+    target_sel = target_full[asset_cfg.joint_ids].to(
+        device=joint_pos_sel.device, dtype=joint_pos_sel.dtype
+    )
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in pose_json_deviation_l1_after_delay")
+
+    # Base penalty (L1 over selected joints)
+    deviations = torch.abs(joint_pos_sel - target_sel)
+    base_penalty = torch.sum(deviations, dim=1)  # [num_envs]
+
+    # ---- Time gating (per env) ----
+    steps = _steps_since_reset(env)  # [num_envs], int
+    dt = _step_dt(env)
+    delay_steps = int(max(0, round(delay_s / dt)))
+    ramp_steps  = int(max(0, round(ramp_s  / dt)))
+
+    # piecewise weight: 0 until delay, then (0..1) ramp, then 1
+    steps_f = steps.to(dtype=base_penalty.dtype)
+    if ramp_steps > 0:
+        w = torch.clamp((steps_f - delay_steps) / max(1, ramp_steps), min=0.0, max=1.0)
+    else:
+        w = (steps >= delay_steps).to(dtype=base_penalty.dtype)
+
+    return w * base_penalty

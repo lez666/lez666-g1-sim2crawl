@@ -227,45 +227,73 @@ class EventCfg:
         },
     )
 
-
-    reset_robot = EventTerm(
-        func=mdp.reset_from_pose_array_with_curriculum,
+    reset_base = EventTerm(
+        func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "json_path": "assets/sorted-poses-rc3.json",
-            
-            # Curriculum parameters: start with crawling, expand BACKWARD to include standing
-            "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
-            "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
-            "home_frame_prob": 0.1,       # 30% always sample crawling pose
-            
-            # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
-            "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
-            "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
-            # Curriculum will increase this to ~0.1 in final stages
-
-            # Small random offsets on root pose at reset (position in meters, angles in radians)
-            "pose_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
-                "z": (-0.05, 0.05),
-                "roll": (-0.10, 0.10),
-                "pitch": (-0.10, 0.10),
-                "yaw": (-3.14, 3.14),
-            },
-            # Small random root velocity at reset (linear m/s, angular rad/s)
+            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
-                "z":(-0.05, 0.05),
-                "roll": (-0.05, 0.05),
-                "pitch":(-0.05, 0.05),
-                "yaw":(-0.05, 0.05)
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (-0.5, 0.5),
+                "roll": (-0.5, 0.5),
+                "pitch": (-0.5, 0.5),
+                "yaw": (-0.5, 0.5),
             },
-            "position_range": (0.95, 1.05),
-            "joint_velocity_range": (0.0, 0.0),
         },
     )
+
+
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_scale,
+        mode="reset",
+        params={
+            "position_range": (0.5, 1.5),
+            "velocity_range": (0.0, 0.0),
+        },
+    )
+
+
+    
+
+    # reset_robot = EventTerm(
+    #     func=mdp.reset_from_pose_array_with_curriculum,
+    #     mode="reset",
+    #     params={
+    #         "json_path": "assets/sorted-poses-rc3.json",
+            
+    #         # Curriculum parameters: start with crawling, expand BACKWARD to include standing
+    #         "frame_range": (4000, 5796),  # Start with last pose only - curriculum will expand backward
+    #         "home_frame": 5796,           # Pose 5796 (crawling) is the start anchor
+    #         "home_frame_prob": 0.1,       # 30% always sample crawling pose
+            
+    #         # Optional: Add standing as end anchor (starts at 0, ramped up by curriculum)
+    #         "end_home_frame": 0,          # Pose 0 (standing) is the end anchor
+    #         "end_home_frame_prob": 0.0,   # Start at 0% - curriculum will ramp this up near the end
+    #         # Curriculum will increase this to ~0.1 in final stages
+
+    #         # Small random offsets on root pose at reset (position in meters, angles in radians)
+    #         "pose_range": {
+    #             "x": (-0.05, 0.05),
+    #             "y": (-0.05, 0.05),
+    #             "z": (-0.05, 0.05),
+    #             "roll": (-0.10, 0.10),
+    #             "pitch": (-0.10, 0.10),
+    #             "yaw": (-3.14, 3.14),
+    #         },
+    #         # Small random root velocity at reset (linear m/s, angular rad/s)
+    #         "velocity_range": {
+    #             "x": (-0.05, 0.05),
+    #             "y": (-0.05, 0.05),
+    #             "z":(-0.05, 0.05),
+    #             "roll": (-0.05, 0.05),
+    #             "pitch":(-0.05, 0.05),
+    #             "yaw":(-0.05, 0.05)
+    #         },
+    #         "position_range": (0.95, 1.05),
+    #         "joint_velocity_range": (0.0, 0.0),
+    #     },
+    # )
 
 
     push_robot = EventTerm(
@@ -306,14 +334,17 @@ class RewardsCfg:
     # -- optional penalties
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
+
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
     )
+
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
         weight=3.,
@@ -323,7 +354,6 @@ class RewardsCfg:
             "threshold": 0.2,
         },
     )
-
 
     both_feet_air = RewTerm(
         func=mdp.both_feet_air,
@@ -350,13 +380,13 @@ class RewardsCfg:
     )
 
 
-
     # Penalize deviation from default of the joints that are not essential for locomotion
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
     )
+
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.2,
@@ -381,45 +411,16 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names="waist_yaw_joint")},
     )
 
-    # pose_deviation_hip = RewTerm(
-    #     func=mdp.pose_json_deviation_l1,
-    #     weight=-0.1,
-    #     params={
-    #         "pose_path": DEFAULT_POSE_PATH,
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])
-    #     },
-    # )
-    
-    
-    
-    # pose_deviation_arms = RewTerm(
-    #     func=mdp.pose_json_deviation_l1,
-    #     weight=-0.2,
-    #     params={
-    #         "pose_path": DEFAULT_POSE_PATH,
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             joint_names=[
-    #                 ".*_shoulder_pitch_joint",
-    #                 ".*_shoulder_roll_joint",
-    #                 ".*_shoulder_yaw_joint",
-    #                 ".*_elbow_joint",
-    #                 ".*_wrist_roll_joint",
-    #             ],
-    #         )
-    #     },
-    # )
-    
-    # pose_deviation_torso = RewTerm(
-    #     func=mdp.pose_json_deviation_l1,
-    #     weight=-0.1,
-    #     params={
-    #         "pose_path": DEFAULT_POSE_PATH,
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names="waist_yaw_joint")
-    #     },
-    # )
+    both_feet_on_ground_when_stationary = RewTerm(
+        func=mdp.both_feet_on_ground_when_stationary,
+        weight=-0.5,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 0.1,
+        },
+    )
 
-  
 
 @configclass
 class TerminationsCfg:

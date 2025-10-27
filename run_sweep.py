@@ -11,7 +11,7 @@ from pathlib import Path
 # =============================================================================
 
 # Auto-suspend configuration
-AUTO_SUSPEND = False  # Set to True to automatically suspend after all sweeps complete
+AUTO_SUSPEND = True  # Set to True to automatically suspend after all sweeps complete
 
 # Define multiple sweeps to run in sequence
 # Each entry will run as a complete sweep with its own experiment name and video compilation
@@ -57,28 +57,50 @@ SWEEP_QUEUE = [
     #     "exclude_rules": [],
     # },
 
-    {
-        "task_name": "g1-quad",
-        "experiment_name": "g1-quad-sweep",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "resume_checkpoint": None,  # Optionally set to checkpoint path, e.g., "model_2599.pt"
-        "sweep_params": {
-            #  "env.rewards.pose_deviation_all.weight": [ -0.3, -0.1],
-            #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+    # {
+    #     "task_name": "g1-quad",
+    #     "experiment_name": "g1-quad-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+    #     "sweep_params": {
+    #         #  "env.rewards.pose_deviation_all.weight": [ -0.3, -0.1],
+    #         #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+    #          "agent.max_iterations": [1500],
 
-        },
-        "sweep_param_sets": [],
-        "exclude_rules": [],
-    },
 
-    {
-        "task_name": "g1-locomotion",
-        "experiment_name": "g1-locomotion-sweep",  # Nanoid will be auto-appended
+    #     },
+    #     "sweep_param_sets": [],
+    #     "exclude_rules": [],
+    # },
+
+    # {
+    #     "task_name": "g1-locomotion",
+    #     "experiment_name": "g1-locomotion-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+    #     "sweep_params": {
+    #         # "env.terminations.base_contact.params.sensor_cfg.body_names": ["torso_link","__OMIT__"],
+    #          "env.rewards.feet_air_time.weight": [ 3.0, 2.0, 1.0],
+    #         "env.rewards.both_feet_on_ground_when_stationary.weight": [-1.0, -3.0, 0.0],
+    #         "env.rewards.feet_air_time.params.threshold": [0.2,0.4],
+
+    #          "agent.max_iterations": [2000],
+    #         #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+
+    #     },
+    #     "sweep_param_sets": [],
+    #     "exclude_rules": [],
+    # },
+        {
+        "task_name": "g1-crawl-start",
+        "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
         "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "resume_checkpoint": None,  # Optionally set to checkpoint path, e.g., "model_2599.pt"
         "sweep_params": {
-            "env.terminations.base_contact.params.sensor_cfg.body_names": ["torso_link","__OMIT__"],
-            #  "env.rewards.pose_deviation_all.weight": [ -0.3, -0.1],
+            "env.rewards.dof_acc_l2.weight": [ -1e-3, -1e-5],
+            "env.rewards.action_rate_l2.weight": [-1e-3, -1e-5],
+             "env.rewards.pose_deviation_all.weight": [-1.0, 0.0],
+             "env.rewards.flat_orientation_l2.weight": [1.0,0.3],
+             "env.rewards.base_height_l2.weight": [-1.0,-0.3,-0.1],
+
+             "agent.max_iterations": [1000],
             #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
 
         },
@@ -312,7 +334,11 @@ def build_train_args(sweep_params):
     train_args = []
     
     # Add sweep parameters (skip those marked with OMIT_PARAM)
+    RESERVED_KEYS = {"resume_checkpoint"}  # handled as CLI flag, not a Hydra override
     for param_name, param_value in sweep_params.items():
+        # Skip reserved keys that map to CLI flags
+        if param_name in RESERVED_KEYS:
+            continue
         if param_value != OMIT_PARAM:
             train_args.append(f"{param_name}={param_value}")
     
@@ -328,7 +354,13 @@ def get_combination_description(sweep_params, combination_num, total_combination
     param_strs = []
     for param_name, param_value in sweep_params.items():
         short_name = param_name.split('.')[-1]
-        if param_value == OMIT_PARAM:
+        # Treat resume_checkpoint set to "null"/None/empty as omitted for display purposes
+        is_resume_and_null = (
+            param_name == "resume_checkpoint" and (
+                param_value is None or (isinstance(param_value, str) and param_value.strip().lower() in ("null", "", "none"))
+            )
+        )
+        if param_value == OMIT_PARAM or is_resume_and_null:
             param_strs.append(f"{short_name}=<omitted>")
         else:
             param_strs.append(f"{short_name}={param_value}")
@@ -427,12 +459,8 @@ def run_single_sweep(sweep_config, sweep_number, total_sweeps):
     print(f"Task: {TASK_NAME}")
     print(f"{'='*80}\n")
     
-    # Define base commands
+    # Define base commands (resume handled exclusively via sweep parameters)
     TRAIN_BASE_CMD = ["python", "scripts/rsl_rl/train.py","--task", TASK_NAME, "--headless"]
-    # Optionally resume training from a checkpoint if provided in sweep config
-    RESUME_CHECKPOINT = sweep_config.get("resume_checkpoint")
-    if RESUME_CHECKPOINT:
-        TRAIN_BASE_CMD += ["--resume_checkpoint", str(RESUME_CHECKPOINT)]
 
     PLAY_BASE_CMD = ["python", "scripts/rsl_rl/play.py", "--task", TASK_NAME, "--headless", "--video", "--video_length", "200", "--enable_cameras"]
 
@@ -507,6 +535,20 @@ def run_single_sweep(sweep_config, sweep_number, total_sweeps):
 
         # Construct the full train command
         full_train_cmd = TRAIN_BASE_CMD + train_args
+        # If resume_checkpoint is part of this combination, append as CLI flag when not null/omitted
+        rc_value = combination.get("resume_checkpoint")
+        if rc_value is not None:
+            # Treat special omit/null values as skip
+            if isinstance(rc_value, str):
+                rc_lower = rc_value.strip().lower()
+            else:
+                rc_lower = None
+            if not (
+                rc_value == OMIT_PARAM or
+                rc_value is None or
+                (isinstance(rc_value, str) and rc_lower in ("", "null", "none"))
+            ):
+                full_train_cmd += ["--resume_checkpoint", str(rc_value)]
         train_ok = run_command(full_train_cmd, f"Training for {description}", prefix=run_prefix, 
                    log_file=log_file, run_number=i+1, total_runs=len(parameter_combinations), 
                    combination=combo_with_names, command_type="TRAIN")
