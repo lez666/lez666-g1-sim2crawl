@@ -233,12 +233,12 @@ class EventCfg:
         params={
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.05, 0.05),
-                "y": (-0.05, 0.05),
-                "z": (-0.05, 0.05),
-                "roll": (-0.05, 0.05),
-                "pitch": (-0.05, 0.05),
-                "yaw": (-0.05, 0.05),
+                "y": (-0.1, 0.1),
+                "x": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1),
             },
         },
     )
@@ -308,12 +308,12 @@ class RewardsCfg:
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1e-4)
 
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1e-7, params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-            )
-        }
-    )
+    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1e-7, params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #         )
+    #     }
+    # )
     # Safety-aligned penalties (match deploy/runtime warnings)
     # Penalize absolute position jump rate violations (|Δq|/dt > 15 rad/s)
     # pos_rate_violation = RewTerm(
@@ -416,12 +416,12 @@ class RewardsCfg:
 
     pose_deviation = RewTerm(
         func=mdp.pose_json_deviation_l1_two_stage,
-        weight=-1.0,
+        weight=-0.1,
         params={
             "pose_path_before": "assets/default-pose.json",
             "pose_path_after": "assets/crawl-pose.json", 
-            "delay_s": 1.0,
-            "ramp_s": 0.0,
+            "delay_s": 2.,
+            "ramp_s": 0.25,
         }
     )
         

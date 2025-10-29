@@ -72,44 +72,44 @@ SWEEP_QUEUE = [
     #     "exclude_rules": [],
     # },
 
-    {
-        "task_name": "g1-locomotion",
-        "experiment_name": "g1-locomotion-sweep",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "sweep_params": {
-            # "env.terminations.base_contact.params.sensor_cfg.body_names": ["torso_link","__OMIT__"],
-             "env.rewards.track_lin_vel_xy_exp.weight": [ 1.0, 2.0 ],
-            "env.rewards.track_ang_vel_z_exp.weight":  [  1.0, 2.0 ],
+    # {
+    #     "task_name": "g1-locomotion",
+    #     "experiment_name": "g1-locomotion-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+    #     "sweep_params": {
+    #         # "env.terminations.base_contact.params.sensor_cfg.body_names": ["torso_link","__OMIT__"],
+    #          "env.rewards.track_lin_vel_xy_exp.weight": [ 1.0, 2.0 ],
+    #         "env.rewards.track_ang_vel_z_exp.weight":  [  1.0, 2.0 ],
 
-             "agent.max_iterations": [2500],
-            #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+    #          "agent.max_iterations": [2500],
+    #         #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
 
-        },
-        "sweep_param_sets": [
-            # [
-            #     {
-            #         "env.rewards.joint_deviation_hip.weight": -0.1,
-            #         "env.rewards.joint_deviation_arms.weight": -0.2,
-            #         "env.rewards.joint_deviation_torso.weight": -0.1,
-            #         "env.rewards.joint_deviation_all.weight": 0.0,
-            #     },
-            #     {
-            #         "env.rewards.joint_deviation_hip.weight": 0.0,
-            #         "env.rewards.joint_deviation_arms.weight": 0.0,
-            #         "env.rewards.joint_deviation_torso.weight": 0.0,
-            #         "env.rewards.joint_deviation_all.weight": -0.1,
-            #     }
-            #     ,
-            #     {
-            #         "env.rewards.joint_deviation_hip.weight": 0.0,
-            #         "env.rewards.joint_deviation_arms.weight": 0.0,
-            #         "env.rewards.joint_deviation_torso.weight": 0.0,
-            #         "env.rewards.joint_deviation_all.weight": -0.3,
-            #     }
-            # ],
-        ],
-        "exclude_rules": [],
-    },
+    #     },
+    #     "sweep_param_sets": [
+    #         # [
+    #         #     {
+    #         #         "env.rewards.joint_deviation_hip.weight": -0.1,
+    #         #         "env.rewards.joint_deviation_arms.weight": -0.2,
+    #         #         "env.rewards.joint_deviation_torso.weight": -0.1,
+    #         #         "env.rewards.joint_deviation_all.weight": 0.0,
+    #         #     },
+    #         #     {
+    #         #         "env.rewards.joint_deviation_hip.weight": 0.0,
+    #         #         "env.rewards.joint_deviation_arms.weight": 0.0,
+    #         #         "env.rewards.joint_deviation_torso.weight": 0.0,
+    #         #         "env.rewards.joint_deviation_all.weight": -0.1,
+    #         #     }
+    #         #     ,
+    #         #     {
+    #         #         "env.rewards.joint_deviation_hip.weight": 0.0,
+    #         #         "env.rewards.joint_deviation_arms.weight": 0.0,
+    #         #         "env.rewards.joint_deviation_torso.weight": 0.0,
+    #         #         "env.rewards.joint_deviation_all.weight": -0.3,
+    #         #     }
+    #         # ],
+    #     ],
+    #     "exclude_rules": [],
+    # },
         {
         "task_name": "g1-crawl-start",
         "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
@@ -119,9 +119,9 @@ SWEEP_QUEUE = [
             # "env.rewards.acc_violation.weight": [ -0.1,0.0],
 
             # "env.rewards.either_foot_off_ground.weight":  [ -3.0, -1.0, -0.3],
-            "env.rewards.delayed_pose_deviation.weight": [ -0.3, -0.1],
-            "env.rewards.delayed_pose_deviation.params.delay_s": [ 1.0, 2.0 ],
-            "env.rewards.delayed_pose_deviation.params.ramp_s": [ 0.0, 0.25 ],
+            "env.rewards.pose_deviation.weight": [ -0.3, -0.1],
+            "env.rewards.pose_deviation.params.delay_s": [ 1.0, 2.0 ],
+            "env.rewards.pose_deviation.params.ramp_s": [ 0.0, 0.25 ],
 
 
             

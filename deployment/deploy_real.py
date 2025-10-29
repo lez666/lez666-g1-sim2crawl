@@ -73,6 +73,11 @@ POLICY_DEFAULTS = {
 # Safety flag: set to False to test state logic without moving motors
 ENABLE_MOTOR_COMMANDS = True
 
+# Safety checks: set to False to disable position/velocity/acceleration safety monitoring
+# WARNING: Disabling safety checks can allow dangerous motor commands!
+# Remote heartbeat monitoring is always enabled regardless of this setting.
+ENABLE_SAFETY_CHECKS = True
+
 # Policy cycling behavior: if False, stops at last policy instead of looping back to first
 # Useful to prevent accidental return to first policy before transition is smooth
 LOOP_POLICIES = False
@@ -524,6 +529,16 @@ class Controller:
         Check if current state violates safety limits (position jumps, velocity spikes, etc.)
         Returns True if safe, False if safety violation detected.
         """
+        # Skip safety checks if disabled (but still update timing for diagnostics)
+        if not ENABLE_SAFETY_CHECKS:
+            now = time.time()
+            dt = now - self._last_sample_time
+            if dt <= 0:
+                dt = 1e-4
+            self._last_sample_time = now
+            self._last_dt = dt
+            return True
+        
         # Compute absolute joint positions and time delta for time-aware checks
         q_abs = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
         for i in range(G1_NUM_MOTOR):
@@ -1043,10 +1058,13 @@ if __name__ == "__main__":
     print("  Select: QUIT immediately")
     print("\nSafety features:")
     print("  - Remote heartbeat: Auto-damped if remote disconnects (timeout: 0.5s)")
-    print("  - Position jump detection: Max 0.3 rad/timestep (15 rad/s)")
-    print("  - Velocity spike detection: Max 25.0 rad/s")
-    print("  - Acceleration spike detection: Max 1500 rad/s^2")
-    print("  - Auto-damped mode on any safety violation")
+    if ENABLE_SAFETY_CHECKS:
+        print("  - Position jump detection: Max 0.3 rad/timestep (15 rad/s)")
+        print("  - Velocity spike detection: Max 25.0 rad/s")
+        print("  - Acceleration spike detection: Max 1500 rad/s^2")
+        print("  - Auto-damped mode on any safety violation")
+    else:
+        print("  - WARNING: Position/velocity/acceleration safety checks DISABLED!")
     print(f"\nMotor commands: {'ENABLED' if ENABLE_MOTOR_COMMANDS else 'DISABLED (test mode)'}")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
