@@ -305,20 +305,43 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4,  params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-            )
-        }
-    )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0001)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1e-4)
 
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-0.0001, params={
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1e-7, params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
             )
         }
     )
+    # Safety-aligned penalties (match deploy/runtime warnings)
+    # Penalize absolute position jump rate violations (|Δq|/dt > 15 rad/s)
+    # pos_rate_violation = RewTerm(
+    #     func=mdp.joint_position_rate_violation_penalty,
+    #     weight=-1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "rate_limit": 15.0,
+    #     },
+    # )
+    # # Penalize velocity spikes (|qdot| > 25 rad/s)
+    # vel_violation = RewTerm(
+    #     func=mdp.joint_velocity_violation_penalty,
+    #     weight=-1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "vel_limit": 25.0,
+    #     },
+    # )
+    # Penalize acceleration spikes (|qddot| > 1500 rad/s^2)
+    # acc_violation = RewTerm(
+    #     func=mdp.joint_acceleration_violation_penalty,
+    #     weight=-1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "acc_limit": 1500.0,
+    #     },
+    # )
     # body_velocity_regularizer = RewTerm(
     #     func=mdp.body_lin_acc_l2, 
     #     weight=-0.1,  # Negative weight for penalty
@@ -334,9 +357,20 @@ class RewardsCfg:
     #     },
     # )
 
+    # desired_body_contact_penalty = RewTerm(
+    #     func=mdp.desired_contacts,
+    #     weight=3.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names=".*(ankle_roll_link|wrist_link)",
+    #         ),
+    #     }
+    # )
+
     undesired_body_contact_penalty = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-10.0,
+        weight=-3.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -346,30 +380,63 @@ class RewardsCfg:
         },
     )
 
-    flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=3.)
-
-
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-3.,
-        params={
-            "target_height": 0.22,
-            "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
-            # "sensor_cfg": SceneEntityCfg("height_scanner"),
-        },
+    # flat_orientation_l2 = RewTerm(func=mdp.align_projected_gravity_plus_x_l2, weight=3.)
+    misalign_projected_gravity_plus_x_l2 = RewTerm(
+        func=mdp.misalign_projected_gravity_plus_x_l2, 
+        weight=-3.0
     )
 
-    # pose_deviation_all = RewTerm(
-    #     func=mdp.pose_json_deviation_l1_after_delay,
-    #     weight=-1.0,
+    # base_height_l2 = RewTerm(
+    #     func=mdp.base_height_l2,
+    #     weight=-3.,
     #     params={
-    #         "pose_path": CRAWL_POSE_PATH,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "delay_s": 1.5,
-    #         "ramp_s": 0.5,
+    #         "target_height": 0.22,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="pelvis"),
+    #         # "sensor_cfg": SceneEntityCfg("height_scanner"),
     #     },
     # )
+
+    # joint_deviation_all = RewTerm(
+    #     func=mdp.joint_deviation_l1,
+    #     weight=-0.1,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    # )
+
+
+    # delayed_pose_deviation = RewTerm(
+    #     func=mdp.pose_json_deviation_l1_after_delay,
+    #     weight=-0.1,
+    #     params={
+    #         "pose_path": "assets/crawl-pose.json",
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "delay_s": 1.,
+    #         "ramp_s": 0.1,
+    #     }
+    # )
+
+    pose_deviation = RewTerm(
+        func=mdp.pose_json_deviation_l1_two_stage,
+        weight=-1.0,
+        params={
+            "pose_path_before": "assets/default-pose.json",
+            "pose_path_after": "assets/crawl-pose.json", 
+            "delay_s": 1.0,
+            "ramp_s": 0.0,
+        }
+    )
+        
     
+    # either_foot_off_ground = RewTerm(
+    #     func=mdp.either_foot_off_ground,
+    #     weight=-0.3,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names=".*_ankle_roll_link",
+    #         ),
+    #     },
+    # )
+
 
 @configclass
 class TerminationsCfg:
@@ -398,7 +465,7 @@ class G1CrawlStartEnvCfg(ManagerBasedRLEnvCfg):
 
         # general settings
         self.decimation = 4
-        self.episode_length_s = 20.0 #7.0
+        self.episode_length_s = 8.0 #7.0
         # simulation settings
         self.sim.dt = 0.005
         # self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"

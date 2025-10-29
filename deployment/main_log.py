@@ -41,12 +41,10 @@ import argparse
 import select
 import numpy as np
 import torch
-import os
-import csv
+import logging
 from datetime import datetime
-from pathlib import Path
 
-NETWORK_CARD_NAME = 'enxc8a362b43bfd'
+NETWORK_CARD_NAME = 'eth0'
 
 # ============================================================================
 # CONFIGURATION
@@ -78,9 +76,9 @@ ENABLE_MOTOR_COMMANDS = True
 LOOP_POLICIES = False
 
 # Velocity command limits (scaled by gamepad sticks)
-MAX_LIN_VEL_FORWARD = 1.5  # m/s - Max forward/backward velocity (left stick Y)
-MAX_LIN_VEL_LATERAL = 1.5  # m/s - Max lateral velocity (left stick X)
-MAX_ANG_VEL_YAW = 1.5      # rad/s - Max angular velocity (right stick X)
+MAX_LIN_VEL_FORWARD = 1.  # m/s - Max forward/backward velocity (left stick Y)
+MAX_LIN_VEL_LATERAL = 1.  # m/s - Max lateral velocity (left stick X)
+MAX_ANG_VEL_YAW = 1.      # rad/s - Max angular velocity (right stick X)
 
 # Transition timing (seconds) - smooth lerping between modes
 TRANSITION_TIME_HOLD_POSES = 2.0  # For default_pos and crawl_pos modes
@@ -92,7 +90,7 @@ KD_MULTIPLIER_LEGS = 1.0
 KP_MULTIPLIER_UPPER = 1.0
 KD_MULTIPLIER_UPPER = 1.0
 
-GAIN_STEP = 0.05
+GAIN_STEP = 0.1
 
 # Control modes (switched via D-pad):
 #   UP:    default_pos - Hold default standing position
@@ -212,7 +210,7 @@ class unitreeRemoteController:
 
 
 class Controller:
-    def __init__(self, policy: TorchPolicy, diag_enabled: bool = False, diag_file: str | None = None) -> None:
+    def __init__(self, policy: TorchPolicy) -> None:
         self.policy = policy
 
         self.qj = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
@@ -220,6 +218,9 @@ class Controller:
         self.action = np.zeros(G1_NUM_MOTOR, dtype=np.float32)  # In MuJoCo order
         self.last_action_pytorch = np.zeros(G1_NUM_MOTOR, dtype=np.float32)  # In PyTorch order
         self.counter = 0
+        
+        # Setup logging
+        self._setup_logging()
 
         # Convert joint range tuples to numpy arrays for efficient clamping
         joint_limits = np.array(RESTRICTED_JOINT_RANGE, dtype=np.float32)
@@ -232,18 +233,10 @@ class Controller:
         self._safety_initialized = False
         
         # Safety thresholds
-        self._max_position_jump = 0.3  # rad per timestep (15 rad/s at 20ms)
+        self._max_position_jump = 0.4  # rad per timestep (15 rad/s at 20ms)
         self._max_velocity = 25.0  # rad/s
         self._max_acceleration = 1500.0  # rad/s^2
         self._max_action_magnitude = 5.0  # Action output limit
-        # Time-aware absolute position rate limit (rad/s) for real robot sampling jitter
-        self._max_pos_rate = 15.0
-        self._last_sample_time = time.time()
-        self._prev_q_abs = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
-        self._last_dt = 0.0
-        self._last_max_position_delta = 0.0
-        self._last_allowed_jump = 0.0
-        self._last_position_jump_joint = -1
 
         # Static velocity command placeholder; keyboard controls removed
 
@@ -258,6 +251,10 @@ class Controller:
         # Debug logging
         self._last_debug_print_time = time.time()
         self._debug_print_interval = 1.0  # Print debug info every second
+        
+        # Joint logging interval (seconds)
+        self._last_joint_log_time = time.time()
+        self._joint_log_interval = 0.5  # Log joint positions every 0.5 seconds
 
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()
         self.low_state = unitree_hg_msg_dds__LowState_()
@@ -324,41 +321,47 @@ class Controller:
         
         # Safety gate: require Start button press before allowing controls
         self._system_started = False
+        
+        # Log initial policy setup
+        self.logger.info("=" * 80)
+        self.logger.info(f"INITIAL POLICY: [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+        self.logger.info(f"Default set: {self._policy_defaults.get(self._policy_paths[self._current_policy_idx])}")
+        self.logger.info(f"Total policies loaded: {len(self._policy_paths)}")
+        for idx, path in enumerate(self._policy_paths):
+            self.logger.info(f"  [{idx}] {path}")
+        self.logger.info("=" * 80)
 
-        # Diagnostics logging
-        self._diag_enabled = bool(diag_enabled)
-        self._diag_writer = None
-        self._diag_file = diag_file
-        self._diag_started_printed = False
-        if self._diag_enabled:
-            if not self._diag_file:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                project_root = Path(__file__).resolve().parents[1]
-                diag_dir = project_root / "outputs" / "diagnostics"
-                os.makedirs(str(diag_dir), exist_ok=True)
-                self._diag_file = str(diag_dir / f"real_{ts}.csv")
-            else:
-                # Ensure directory exists; resolve relative paths to project root
-                diag_path = Path(self._diag_file)
-                if not diag_path.is_absolute():
-                    project_root = Path(__file__).resolve().parents[1]
-                    diag_path = project_root / diag_path
-                    self._diag_file = str(diag_path)
-                os.makedirs(os.path.dirname(self._diag_file), exist_ok=True)
-            self._diag_writer = open(self._diag_file, 'w', newline='')
-            writer = csv.writer(self._diag_writer)
-            header = [
-                't', 'dt', 'mode', 'policy',
-                'max_delta', 'allowed_jump', 'max_delta_joint',
-            ]
-            for name in MUJOCO_JOINT_NAMES:
-                header.append(f"q_{name}")
-            for name in MUJOCO_JOINT_NAMES:
-                header.append(f"dq_{name}")
-            for name in MUJOCO_JOINT_NAMES:
-                header.append(f"target_{name}")
-            writer.writerow(header)
-            self._diag_writer.flush()
+    def _setup_logging(self):
+        """Setup logging to file with timestamps."""
+        # Create logs directory if it doesn't exist
+        import os
+        os.makedirs("logs", exist_ok=True)
+        
+        # Create a unique log file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"logs/robot_control_{timestamp}.log"
+        
+        # Setup logger
+        self.logger = logging.getLogger("RobotController")
+        self.logger.setLevel(logging.INFO)
+        
+        # File handler
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setLevel(logging.INFO)
+        
+        # Formatter
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        
+        # Add handler
+        self.logger.addHandler(file_handler)
+        
+        self.logger.info("=" * 80)
+        self.logger.info("Robot Controller Log Started")
+        self.logger.info(f"Log file: {log_filename}")
+        self.logger.info("=" * 80)
+        
+        print(f"Logging to: {log_filename}")
 
     def _recompute_gains(self):
         self._kp_scaled, self._kd_scaled = get_kp_kd_scaled(
@@ -524,40 +527,25 @@ class Controller:
         Check if current state violates safety limits (position jumps, velocity spikes, etc.)
         Returns True if safe, False if safety violation detected.
         """
-        # Compute absolute joint positions and time delta for time-aware checks
-        q_abs = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
-        for i in range(G1_NUM_MOTOR):
-            q_abs[i] = self.low_state.motor_state[joint2motor_idx[i]].q
-        now = time.time()
-        dt = now - self._last_sample_time
-        if dt <= 0:
-            dt = 1e-4
-        self._last_sample_time = now
-        self._last_dt = dt
-
         if not self._safety_initialized:
             # First iteration - just store current state
-            self._prev_q_abs = q_abs.copy()
             self._prev_qj = self.qj.copy()
             self._prev_dqj = self.dqj.copy()
             self._safety_initialized = True
             return True
         
-        # Check 1: Absolute position jumps scaled by actual dt (handles sampling jitter)
-        allowed_jump = self._max_pos_rate * dt
-        position_delta_abs = np.abs(q_abs - self._prev_q_abs)
-        max_position_delta = float(np.max(position_delta_abs))
-        position_jump_joint = int(np.argmax(position_delta_abs))
-        self._last_max_position_delta = max_position_delta
-        self._last_allowed_jump = allowed_jump
-        self._last_position_jump_joint = position_jump_joint
+        # Check 1: Position jumps
+        position_delta = np.abs(self.qj - self._prev_qj)
+        max_position_delta = np.max(position_delta)
+        position_jump_joint = np.argmax(position_delta)
         
-        if max_position_delta > allowed_jump:
+        if max_position_delta > self._max_position_jump:
             joint_name = MUJOCO_JOINT_NAMES[position_jump_joint]
             print("=" * 60)
-            print("SAFETY VIOLATION: POSITION JUMP DETECTED (ABSOLUTE)!")
-            print(f"{joint_name} (joint {position_jump_joint}) jumped {max_position_delta:.3f} rad over {dt*1000:.1f} ms")
-            print(f"(limit: {allowed_jump:.3f} = {self._max_pos_rate:.1f} rad/s * dt)")
+            print("SAFETY VIOLATION: POSITION JUMP DETECTED!")
+            print(f"{joint_name} (joint {position_jump_joint}) jumped {max_position_delta:.3f} rad in one timestep")
+            print(f"(threshold: {self._max_position_jump:.3f} rad)")
+            print(f"Current pos: {self.qj[position_jump_joint]:.3f}, Previous: {self._prev_qj[position_jump_joint]:.3f}")
             print("Switching to DAMPED mode for safety.")
             print("=" * 60)
             self.control_mode = "damped"
@@ -597,7 +585,6 @@ class Controller:
             return False
         
         # Update previous state for next iteration
-        self._prev_q_abs = q_abs.copy()
         self._prev_qj = self.qj.copy()
         self._prev_dqj = self.dqj.copy()
         
@@ -658,20 +645,34 @@ class Controller:
             
             if LOOP_POLICIES:
                 # Loop back to first policy after last
+                old_idx = self._current_policy_idx
                 self._current_policy_idx = next_idx % num_policies
                 self.policy.set_policy_index(self._current_policy_idx)
                 new_policy = self._policy_paths[self._current_policy_idx]
                 print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {new_policy}")
+                # Log policy change
+                self.logger.info("=" * 60)
+                self.logger.info(f"POLICY CHANGE: [{old_idx}] -> [{self._current_policy_idx}]")
+                self.logger.info(f"New policy: {new_policy}")
+                self.logger.info(f"Default set: {self._policy_defaults.get(new_policy)}")
+                self.logger.info("=" * 60)
                 # Apply corresponding default set immediately
                 self._apply_default_set_for_policy(new_policy)
                 self._safety_initialized = False
             else:
                 # Stop at last policy, don't loop back
                 if next_idx < num_policies:
+                    old_idx = self._current_policy_idx
                     self._current_policy_idx = next_idx
                     self.policy.set_policy_index(self._current_policy_idx)
                     new_policy = self._policy_paths[self._current_policy_idx]
                     print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {new_policy}")
+                    # Log policy change
+                    self.logger.info("=" * 60)
+                    self.logger.info(f"POLICY CHANGE: [{old_idx}] -> [{self._current_policy_idx}]")
+                    self.logger.info(f"New policy: {new_policy}")
+                    self.logger.info(f"Default set: {self._policy_defaults.get(new_policy)}")
+                    self.logger.info("=" * 60)
                     # Apply corresponding default set immediately
                     self._apply_default_set_for_policy(new_policy)
                     self._safety_initialized = False
@@ -945,6 +946,32 @@ class Controller:
                 joint_name = MUJOCO_JOINT_NAMES[idx]
                 print(f"  {joint_name}: {motor_targets_unclamped[idx]:.3f} -> {motor_targets[idx]:.3f} (limits: [{self._joint_lower_bounds[idx]:.3f}, {self._joint_upper_bounds[idx]:.3f}])")
 
+        # Log joint positions and targets periodically
+        current_time = time.time()
+        if current_time - self._last_joint_log_time >= self._joint_log_interval:
+            self._last_joint_log_time = current_time
+            
+            # Get current absolute joint positions
+            current_absolute_positions = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
+            for i in range(G1_NUM_MOTOR):
+                current_absolute_positions[i] = self.low_state.motor_state[joint2motor_idx[i]].q
+            
+            # Log header
+            self.logger.info("-" * 80)
+            self.logger.info(f"JOINT STATE | Policy: [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
+            
+            # Log each joint
+            for i in range(G1_NUM_MOTOR):
+                joint_name = MUJOCO_JOINT_NAMES[i]
+                current_pos = current_absolute_positions[i]
+                target_pos = motor_targets[i]
+                error = target_pos - current_pos
+                self.logger.info(
+                    f"  {joint_name:25s} | Current: {current_pos:7.3f} | Target: {target_pos:7.3f} | Error: {error:7.3f}"
+                )
+            
+            self.logger.info("-" * 80)
+
         # print(f"Kp: {Kp}")
         # print(f"Kd: {Kd}")
         # Build low cmd
@@ -960,33 +987,10 @@ class Controller:
         self.send_cmd(self.low_cmd)
         time.sleep(self.control_dt)
 
-        # Diagnostics logging (policy mode only)
-        if self._diag_enabled and self._diag_writer is not None:
-            # Absolute joint positions
-            q_abs = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
-            for i in range(G1_NUM_MOTOR):
-                q_abs[i] = self.low_state.motor_state[joint2motor_idx[i]].q
-            writer = csv.writer(self._diag_writer)
-            t = time.time()
-            row = [
-                f"{t:.6f}", f"{self._last_dt:.6f}", self.control_mode, self._policy_paths[self._current_policy_idx],
-                f"{self._last_max_position_delta:.6f}", f"{self._last_allowed_jump:.6f}", str(self._last_position_jump_joint),
-            ]
-            row.extend([f"{float(v):.6f}" for v in q_abs])
-            row.extend([f"{float(v):.6f}" for v in self.dqj])
-            row.extend([f"{float(self.low_cmd.motor_cmd[joint2motor_idx[i]].q):.6f}" for i in range(G1_NUM_MOTOR)])
-            writer.writerow(row)
-            self._diag_writer.flush()
-            if not self._diag_started_printed:
-                print(f"[DIAG] Logging started (first row written) -> {self._diag_file}")
-                self._diag_started_printed = True
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="G1 real deployment controller")
     parser.add_argument("--print-sticks", action="store_true", help="Print remote stick/button values and exit on Select")
-    parser.add_argument("--diag-log", action="store_true", help="Enable CSV diagnostics logging")
-    parser.add_argument("--diag-file", type=str, default="", help="Diagnostics CSV output file (optional)")
     args = parser.parse_args()
 
     if args.print_sticks:
@@ -1051,20 +1055,7 @@ if __name__ == "__main__":
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
 
-    # Prepare diagnostics path if enabled
-    diag_file = args.diag_file
-    if args.diag_log and not diag_file:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        project_root = Path(__file__).resolve().parents[1]
-        diag_dir = project_root / "outputs" / "diagnostics"
-        os.makedirs(str(diag_dir), exist_ok=True)
-        diag_file = str(diag_dir / f"real_{ts}.csv")
-
-    controller = Controller(policy, diag_enabled=args.diag_log, diag_file=diag_file)
-    if args.diag_log:
-        print(f"Diagnostics logging enabled: {controller._diag_file}")
-    else:
-        print("Diagnostics logging disabled")
+    controller = Controller(policy)
 
     print("\n" + "=" * 60)
     print("Controller ready. Press START to begin!")

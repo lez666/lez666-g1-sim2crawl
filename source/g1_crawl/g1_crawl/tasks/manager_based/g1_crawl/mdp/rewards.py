@@ -52,6 +52,18 @@ def both_feet_on_ground(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     return both_feet_in_contact.float()
 
 
+def either_foot_off_ground(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalty when either foot is not in contact with the ground.
+
+    Returns 1.0 if fewer than two selected feet are in contact; 0.0 otherwise.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    both_feet_in_contact = torch.sum(in_contact.int(), dim=1) == 2
+    return (1.0 - both_feet_in_contact.float())
+
+
 def foot_clearance_reward(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
 ) -> torch.Tensor:
@@ -779,6 +791,22 @@ def align_projected_gravity_plus_x_l2(
     target = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
     dist_sq = torch.sum(torch.square(g_b - target), dim=1)
     return 1.0 - 0.5 * dist_sq
+
+
+def misalign_projected_gravity_plus_x_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalty for misalignment of projected gravity with +X axis in base frame using L2 mapping.
+
+    penalty = 0.5 * || g_b - [1, 0, 0] ||^2, in [0, 2].
+    Larger penalty -> more misaligned.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    g_b = asset.data.projected_gravity_b  # (num_envs, 3)
+    target = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    dist_sq = torch.sum(torch.square(g_b - target), dim=1)
+    return 0.5 * dist_sq
 
 
 def flat_orientation_l2(
@@ -1665,6 +1693,99 @@ def _step_dt(env: ManagerBasedRLEnv) -> float:
         return float(env.sim.dt)
     raise AttributeError("Could not determine step dt (looked for env.step_dt and env.sim.dt).")
 
+
+def joint_position_rate_violation_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    rate_limit: float = 15.0,  # rad/s equivalent from absolute position jump check
+) -> torch.Tensor:
+    """Penalty when absolute joint position rate |Δq|/dt exceeds rate_limit.
+
+    Mirrors the deploy-time "absolute position jump" check by computing finite
+    differences of joint positions using the simulation dt.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    qpos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+
+    if not torch.isfinite(qpos).all():
+        raise RuntimeError("joint_position_rate_violation_penalty received non-finite joint positions")
+
+    dt = _step_dt(env)
+    if not (dt > 0.0):
+        raise RuntimeError(f"joint_position_rate_violation_penalty invalid dt: {dt}")
+
+    prev_key = "_safety_prev_joint_pos"
+    if not hasattr(env, prev_key):
+        setattr(env, prev_key, asset.data.joint_pos.detach().clone())
+    prev_full: torch.Tensor = getattr(env, prev_key)
+    if prev_full.shape != asset.data.joint_pos.shape or prev_full.device != asset.data.joint_pos.device:
+        prev_full = asset.data.joint_pos.detach().clone()
+        setattr(env, prev_key, prev_full)
+
+    prev_sel = prev_full[:, asset_cfg.joint_ids]
+    rate = torch.abs(qpos - prev_sel) / float(dt)
+    if not torch.isfinite(rate).all():
+        raise RuntimeError("joint_position_rate_violation_penalty produced non-finite position rates")
+
+    excess = torch.clamp(rate - float(rate_limit), min=0.0)
+    penalty = torch.sum(excess * excess, dim=1)
+
+    setattr(env, prev_key, asset.data.joint_pos.detach().clone())
+    return penalty
+
+
+def joint_velocity_violation_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    vel_limit: float = 25.0,  # rad/s
+) -> torch.Tensor:
+    """Penalty when |qdot| exceeds vel_limit (velocity spike)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    if not torch.isfinite(qvel).all():
+        raise RuntimeError("joint_velocity_violation_penalty received non-finite joint velocities")
+
+    excess = torch.clamp(torch.abs(qvel) - float(vel_limit), min=0.0)
+    return torch.sum(excess * excess, dim=1)
+
+
+def joint_acceleration_violation_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    acc_limit: float = 1500.0,  # rad/s^2
+) -> torch.Tensor:
+    """Penalty when |qddot| exceeds acc_limit (acceleration spike).
+
+    Uses finite differences of joint velocities with simulation dt.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    if not torch.isfinite(qvel).all():
+        raise RuntimeError("joint_acceleration_violation_penalty received non-finite joint velocities")
+
+    dt = _step_dt(env)
+    if not (dt > 0.0):
+        raise RuntimeError(f"joint_acceleration_violation_penalty invalid dt: {dt}")
+
+    prev_key = "_safety_prev_joint_vel"
+    if not hasattr(env, prev_key):
+        setattr(env, prev_key, env.scene[asset_cfg.name].data.joint_vel.detach().clone())
+    prev_full: torch.Tensor = getattr(env, prev_key)
+    if prev_full.shape != env.scene[asset_cfg.name].data.joint_vel.shape or prev_full.device != env.scene[asset_cfg.name].data.joint_vel.device:
+        prev_full = env.scene[asset_cfg.name].data.joint_vel.detach().clone()
+        setattr(env, prev_key, prev_full)
+
+    prev_sel = prev_full[:, asset_cfg.joint_ids]
+    qacc = (qvel - prev_sel) / float(dt)
+    if not torch.isfinite(qacc).all():
+        raise RuntimeError("joint_acceleration_violation_penalty produced non-finite accelerations")
+
+    excess = torch.clamp(torch.abs(qacc) - float(acc_limit), min=0.0)
+    penalty = torch.sum(excess * excess, dim=1)
+
+    setattr(env, prev_key, env.scene[asset_cfg.name].data.joint_vel.detach().clone())
+    return penalty
+
 def pose_json_deviation_l1_after_delay(
     env: ManagerBasedRLEnv,
     pose_path: str = "assets/default-pose.json",
@@ -1710,3 +1831,71 @@ def pose_json_deviation_l1_after_delay(
         w = (steps >= delay_steps).to(dtype=base_penalty.dtype)
 
     return w * base_penalty
+
+
+def pose_json_deviation_l1_two_stage(
+    env: ManagerBasedRLEnv,
+    pose_path_before: str = "assets/crawl-pose.json",
+    pose_path_after: str = "assets/stand-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    delay_s: float = 1.0,           # time before transitioning from before->after pose
+    ramp_s: float = 0.5,            # time to smoothly blend between poses
+) -> torch.Tensor:
+    """L1 penalty that transitions between two target poses over time.
+
+    Before `delay_s`: penalizes deviation from pose_path_before (full strength).
+    Between `delay_s` and `delay_s + ramp_s`: smoothly blends penalty from pose_before to pose_after.
+    After `delay_s + ramp_s`: penalizes deviation from pose_path_after (full strength).
+
+    Args:
+        env: RL environment.
+        pose_path_before: Path to JSON pose file for early episode.
+        pose_path_after: Path to JSON pose file for late episode.
+        asset_cfg: Scene entity for the robot asset.
+        delay_s: Time in seconds before transitioning starts.
+        ramp_s: Time in seconds to smoothly blend between poses (0 = instant switch).
+
+    Returns:
+        Tensor of shape (num_envs,) with L1 deviation penalty from time-dependent target pose.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Build target vectors for both poses in joint order
+    target_before_full = _get_full_target_vector(pose_path_before, asset)
+    target_after_full = _get_full_target_vector(pose_path_after, asset)
+
+    # Gather joint positions in the selected order
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    
+    # Ensure targets are on same device/dtype
+    target_before_sel = target_before_full[asset_cfg.joint_ids].to(
+        device=joint_pos_sel.device, dtype=joint_pos_sel.dtype
+    )
+    target_after_sel = target_after_full[asset_cfg.joint_ids].to(
+        device=joint_pos_sel.device, dtype=joint_pos_sel.dtype
+    )
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in pose_json_deviation_l1_two_stage")
+
+    # Compute L1 penalties for both target poses
+    penalty_before = torch.sum(torch.abs(joint_pos_sel - target_before_sel), dim=1)  # [num_envs]
+    penalty_after = torch.sum(torch.abs(joint_pos_sel - target_after_sel), dim=1)    # [num_envs]
+
+    # ---- Time-based blending (per env) ----
+    steps = _steps_since_reset(env)  # [num_envs], int
+    dt = _step_dt(env)
+    delay_steps = int(max(0, round(delay_s / dt)))
+    ramp_steps  = int(max(0, round(ramp_s  / dt)))
+
+    # Blend weight: 0 before delay (use pose_before), 1 after delay+ramp (use pose_after)
+    steps_f = steps.to(dtype=penalty_before.dtype)
+    if ramp_steps > 0:
+        # Smooth transition from 0 to 1 during ramp period
+        blend = torch.clamp((steps_f - delay_steps) / max(1, ramp_steps), min=0.0, max=1.0)
+    else:
+        # Instant switch at delay_steps
+        blend = (steps >= delay_steps).to(dtype=penalty_before.dtype)
+
+    # Linear interpolation: (1-blend)*penalty_before + blend*penalty_after
+    return (1.0 - blend) * penalty_before + blend * penalty_after

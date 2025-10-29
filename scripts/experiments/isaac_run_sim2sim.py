@@ -9,7 +9,7 @@ from isaaclab.assets import AssetBaseCfg
 import isaaclab.sim as sim_utils
 from isaaclab.devices import Se2Gamepad, Se2GamepadCfg
 
-from g1_crawl.tasks.manager_based.g1_crawl.g1 import G1_CFG
+from g1_crawl.tasks.manager_based.g1_crawl.g1 import G1_STAND_CFG
 
 import json
 import math
@@ -21,6 +21,26 @@ import torch
 import carb
 import omni.appwindow
 
+
+# ==== Policy list configuration ====
+# Add your policy paths here to cycle through them with N/P keys
+POLICY_PATHS = [
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-29_01-01-12_V_yU/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-29_00-30-18_l2uF/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_23-59-16_ySdW/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_23-27-40_Wzrb/exported/policy.pt",
+    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_22-57-00_qJdS/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_22-26-00_p_6P/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_21-54-48_jUBr/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_21-23-55_1Ou4/exported/policy.pt",
+    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_20-52-53_n-Km/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_20-21-59_SgIc/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_19-51-08_7L9h/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_19-20-08_f8Hm/exported/policy.pt",
+    # "deployment/policies/policy_crawl.pt",
+    # "deployment/policies/policy_crawl_start.pt",
+    # "deployment/policies/policy_shamble.pt",
+]
 
 # ==== Command range configuration (easy to tweak) ====
 # Raw SE2 gamepad outputs are clamped to these ranges before mapping to the policy inputs.
@@ -115,11 +135,11 @@ def create_scene_cfg():
         dome_light = AssetBaseCfg(
             prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
         )
-        Robot = G1_CFG.replace(
+        Robot = G1_STAND_CFG.replace(
             prim_path="{ENV_REGEX_NS}/Robot",
-            spawn=G1_CFG.spawn.replace(
-                rigid_props=G1_CFG.spawn.rigid_props.replace(disable_gravity=False),
-                articulation_props=G1_CFG.spawn.articulation_props.replace(fix_root_link=False),
+            spawn=G1_STAND_CFG.spawn.replace(
+                rigid_props=G1_STAND_CFG.spawn.rigid_props.replace(disable_gravity=False),
+                articulation_props=G1_STAND_CFG.spawn.articulation_props.replace(fix_root_link=False),
             ),
         )
 
@@ -352,29 +372,41 @@ class IsaacPolicyController:
         return True
 
 
-def run_single_policy(
+def run_multi_policy(
     sim: sim_utils.SimulationContext,
     scene: InteractiveScene,
-    policy_path: str,
+    policy_paths: List[str],
     use_gamepad: bool = True,
     pose_path: Optional[str] = None,
     debug_gamepad: bool = False,
     suppress_clamp_warnings: bool = False,
 ) -> None:
-    controller = IsaacPolicyController(
-        scene=scene,
-        policy_path=Path(policy_path),
-        device="cuda",
-        action_scale=0.5,
-        control_dt=sim.get_physics_dt(),
-        suppress_clamp_warnings=suppress_clamp_warnings,
-    )
-
+    """Run multiple policies with keyboard cycling support.
+    
+    Keyboard controls:
+    - N: Next policy
+    - P: Previous policy
+    - R: Reset to initial pose
+    """
+    
+    # Load initial pose if provided
+    initial_pose: Optional[dict] = None
+    name_to_index: Optional[Dict[str, int]] = None
+    if pose_path is not None:
+        try:
+            initial_pose = load_pose_json(pose_path)
+            name_to_index = build_joint_name_to_index_map(scene["Robot"])
+            apply_pose(scene, initial_pose, name_to_index, zero_velocities=True)
+            print(f"[INFO] Applied initial pose from: {pose_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to apply initial pose '{pose_path}': {e}")
+    
+    # Initialize gamepad
     sim_dt = sim.get_physics_dt()
-    lin_vel_z = 0.0  # forward/back
-    lin_vel_y = 0.0  # lateral
-    ang_vel_x = 0.0  # yaw (mapped from omega_z)
-
+    lin_vel_z = 0.0
+    lin_vel_y = 0.0
+    ang_vel_x = 0.0
+    
     gamepad = None
     if use_gamepad:
         try:
@@ -393,28 +425,47 @@ def run_single_policy(
             gamepad = None
     elif debug_gamepad:
         print("[WARN] --debug-gamepad specified but gamepad disabled with --no-gamepad")
-
-    # Optional: load and apply initial pose
-    initial_pose: Optional[dict] = None
-    name_to_index: Optional[Dict[str, int]] = None
-    if pose_path is not None:
-        try:
-            initial_pose = load_pose_json(pose_path)
-            name_to_index = build_joint_name_to_index_map(scene["Robot"])
+    
+    # Policy cycling state
+    current_policy_idx = 0
+    controller = None
+    switch_policy_requested = True  # Load initial policy
+    
+    def load_policy(idx: int) -> IsaacPolicyController:
+        """Load and initialize a policy controller."""
+        policy_path = policy_paths[idx]
+        print("\n" + "=" * 80)
+        print(f"🔄 LOADING POLICY {idx + 1}/{len(policy_paths)}")
+        print("=" * 80)
+        print(f"Policy: {policy_path}")
+        print("=" * 80 + "\n")
+        
+        ctrl = IsaacPolicyController(
+            scene=scene,
+            policy_path=Path(policy_path),
+            device="cuda",
+            action_scale=0.5,
+            control_dt=sim.get_physics_dt(),
+            suppress_clamp_warnings=suppress_clamp_warnings,
+        )
+        
+        # Reset to initial pose when switching
+        if initial_pose is not None and name_to_index is not None:
             apply_pose(scene, initial_pose, name_to_index, zero_velocities=True)
-            print(f"[INFO] Applied initial pose from: {pose_path}")
-        except Exception as e:
-            print(f"[WARN] Failed to apply initial pose '{pose_path}': {e}")
-
-    # Keyboard setup for reset
+        
+        return ctrl
+    
+    # Keyboard setup
     input_interface = carb.input.acquire_input_interface()
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
-    keys_pressed = {"R": False}
-
+    keys_pressed = {"R": False, "N": False, "P": False}
+    
     def on_keyboard_event(event):
-        nonlocal keys_pressed, initial_pose, name_to_index
+        nonlocal keys_pressed, current_policy_idx, switch_policy_requested, initial_pose, name_to_index
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
             key = event.input.name
+            
+            # Reset pose
             if key == "R" and not keys_pressed["R"]:
                 keys_pressed["R"] = True
                 if initial_pose is not None and name_to_index is not None:
@@ -422,37 +473,71 @@ def run_single_policy(
                     apply_pose(scene, initial_pose, name_to_index, zero_velocities=True)
                 else:
                     print("[WARN] No initial pose loaded; provide --pose to enable reset.")
+            
+            # Next policy
+            elif key == "N" and not keys_pressed["N"] and len(policy_paths) > 1:
+                keys_pressed["N"] = True
+                current_policy_idx = (current_policy_idx + 1) % len(policy_paths)
+                switch_policy_requested = True
+                print(f"[INFO] Switching to next policy ({current_policy_idx + 1}/{len(policy_paths)})...")
+            
+            # Previous policy
+            elif key == "P" and not keys_pressed["P"] and len(policy_paths) > 1:
+                keys_pressed["P"] = True
+                current_policy_idx = (current_policy_idx - 1) % len(policy_paths)
+                switch_policy_requested = True
+                print(f"[INFO] Switching to previous policy ({current_policy_idx + 1}/{len(policy_paths)})...")
+                
         elif event.type == carb.input.KeyboardEventType.KEY_RELEASE:
             if event.input.name in keys_pressed:
                 keys_pressed[event.input.name] = False
-
+    
     keyboard_subscription = input_interface.subscribe_to_keyboard_events(keyboard, on_keyboard_event)
-
-    print("[INFO] Running single-policy Isaac controller")
+    
+    # Print initial info
+    print("[INFO] Running multi-policy Isaac controller")
+    print(f"[INFO] Loaded {len(policy_paths)} policies:")
+    for i, p in enumerate(policy_paths, 1):
+        print(f"  {i}. {p}")
+    print("\n" + "=" * 60)
+    print("CONTROLS")
+    print("=" * 60)
+    print("  N - Next policy")
+    print("  P - Previous policy")
+    print("  R - Reset to initial pose")
+    if use_gamepad:
+        print("  Left stick - Forward/lateral movement")
+        print("  Right stick - Yaw rotation")
+    print("=" * 60)
     print("\n" + "=" * 60)
     print("SAFETY MONITORING ENABLED")
     print("=" * 60)
     print("Real robot safety thresholds are active:")
-    print(f"  - Position jump: Max {controller._max_position_jump:.2f} rad/timestep")
-    print(f"  - Velocity spike: Max {controller._max_velocity:.1f} rad/s")
-    print(f"  - Acceleration spike: Max {controller._max_acceleration:.1f} rad/s²")
+    print(f"  - Position jump: Max 0.30 rad/timestep")
+    print(f"  - Velocity spike: Max 25.0 rad/s")
+    print(f"  - Acceleration spike: Max 1500.0 rad/s²")
     print("\nLOUD warnings will appear if policy would trigger safety shutoff!")
     print("=" * 60 + "\n")
+    
     if debug_gamepad:
-        print("[DEBUG] Gamepad debug enabled: printing raw (v_x, v_y, omega_z) and mapped (lin_vel_z, lin_vel_y, ang_vel_x) every 20 steps")
+        print("[DEBUG] Gamepad debug enabled: printing inputs every 20 steps")
+    
     step = 0
     while simulation_app.is_running():
+        # Switch policy if requested
+        if switch_policy_requested:
+            controller = load_policy(current_policy_idx)
+            switch_policy_requested = False
+        
         # Update velocity commands from gamepad if available
         if gamepad is not None:
-            cmd = gamepad.advance()  # (v_x, v_y, omega_z)
+            cmd = gamepad.advance()
             raw_vx = float(cmd[0].item())
             raw_vy = float(cmd[1].item())
             raw_omega = float(cmd[2].item())
-            # Clamp to configured ranges
             vx = _clamp(raw_vx, CMD_MIN_VX, CMD_MAX_VX)
             vy = _clamp(raw_vy, CMD_MIN_VY, CMD_MAX_VY)
             omega = _clamp(raw_omega, CMD_MIN_OMEGA_Z, CMD_MAX_OMEGA_Z)
-            # Map to training convention used in standalone (z, y, x)
             lin_vel_z = vx
             lin_vel_y = vy
             ang_vel_x = omega
@@ -462,19 +547,18 @@ def run_single_policy(
                     f"clamped: v_x={vx:.3f}, v_y={vy:.3f}, omega_z={omega:.3f} -> "
                     f"mapped: lin_vel_z={lin_vel_z:.3f}, lin_vel_y={lin_vel_y:.3f}, ang_vel_x={ang_vel_x:.3f}"
                 )
-
+        
         obs = controller.get_observation(lin_vel_z, lin_vel_y, ang_vel_x)
         targets = controller.get_targets_isaac(obs)
-
-        # Apply position targets
+        
         scene["Robot"].set_joint_position_target(targets.unsqueeze(0))
         scene.write_data_to_sim()
-
+        
         sim.step()
         scene.update(sim_dt)
         step += 1
-
-    # Cleanup keyboard subscription
+    
+    # Cleanup
     try:
         input_interface.unsubscribe_to_keyboard_events(keyboard, keyboard_subscription)
     except Exception:
@@ -482,13 +566,27 @@ def run_single_policy(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run policy in Isaac with explicit initial pose and reset.")
-    parser.add_argument("--policy", type=str, default="scripts/experiments/policy.pt", help="Path to policy .pt file")
+    parser = argparse.ArgumentParser(
+        description="Run policies in Isaac with policy cycling support. Use N/P keys to cycle through policies. "
+                    "Edit POLICY_PATHS at the top of this file to configure which policies to test."
+    )
+    parser.add_argument(
+        "--policy", 
+        type=str, 
+        action="append",
+        help="(Optional) Override POLICY_PATHS - specify policy .pt file(s) via CLI instead"
+    )
     parser.add_argument("--pose", type=str, default="assets/default-pose.json", help="Path to pose JSON for initial/reset pose")
     parser.add_argument("--no-gamepad", action="store_true", help="Disable SE2 gamepad")
     parser.add_argument("--debug-gamepad", action="store_true", help="Print gamepad inputs and mapped commands (throttled)")
     parser.add_argument("--no-clamp-warnings", action="store_true", help="Silence clamping warnings for motor targets")
     args = parser.parse_args()
+
+    # Use POLICY_PATHS from top of file by default, or CLI override if provided
+    if args.policy is None or len(args.policy) == 0:
+        policy_paths = POLICY_PATHS
+    else:
+        policy_paths = args.policy
 
     sim_cfg = sim_utils.SimulationCfg(device="cuda")
     sim = sim_utils.SimulationContext(sim_cfg)
@@ -501,15 +599,12 @@ def main():
     sim.reset()
     print("[INFO]: Setup complete...")
 
-    # Start with one policy to validate
-    policy_path = args.policy
     pose_path = args.pose
-    print(f"[INFO]: Using policy: {policy_path}")
     print(f"[INFO]: Using pose: {pose_path}")
-    run_single_policy(
+    run_multi_policy(
         sim,
         scene,
-        policy_path,
+        policy_paths,
         use_gamepad=(not args.no_gamepad),
         pose_path=pose_path,
         debug_gamepad=args.debug_gamepad,

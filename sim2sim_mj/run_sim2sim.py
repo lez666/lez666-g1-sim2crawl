@@ -15,6 +15,10 @@ USAGE:
 """
 
 import json
+import os
+import csv
+import time
+from datetime import datetime
 import math
 from pathlib import Path
 
@@ -117,6 +121,15 @@ CONFIG = {
     
     # Amount to change multipliers per button press
     "gain_step": 0.05,
+    # Diagnostics logging (CSV) for parity with real robot
+    # Enable to record per-step dt, absolute joint positions, targets, and safety metrics
+    "diag_log": True,
+    # Optional explicit file path; if empty, a timestamped file will be created under diag_dir
+    "diag_file": "",
+    # Directory for diagnostics when diag_file not set
+    "diag_dir": "outputs/diagnostics",
+    # Filename prefix when auto-generating
+    "diag_prefix": "sim2sim",
 }
 
 # ============================================================================
@@ -676,6 +689,22 @@ class StandalonePolicyController:
         self._max_velocity = 25.0  # rad/s
         self._max_acceleration = 1500.0  # rad/s^2
         self._max_action_magnitude = 5.0  # Action output limit
+        # Time-aware absolute position rate limit (rad/s) for sampling jitter parity
+        self._max_pos_rate = 15.0
+        self._last_sample_time = time.time()
+        self._last_dt = 0.0
+        self._last_max_position_delta = 0.0
+        self._last_allowed_jump = 0.0
+        self._last_position_jump_joint = -1
+        
+        # Rolling 1s window for max position jump
+        self._rolling_time = 0.0
+        self._rolling_max_jump = 0.0
+        self._rolling_max_jump_joint = -1
+        
+        # Rolling 1s window for clamping (max clamp magnitude and joint)
+        self._rolling_clamp_max_diff = 0.0
+        self._rolling_clamp_joint = -1
         
         # Load policy
         print(f"[INFO] Loading policy from: {policy_path}")
@@ -687,6 +716,56 @@ class StandalonePolicyController:
         # Initialize PD gain scaling from model actuators
         self._init_actuator_gain_scaling()
         self._apply_gain_multipliers()
+
+        # Diagnostics logging
+        self._diag_enabled = False
+        self._diag_writer = None
+        self._diag_file = None
+        self._diag_header_written = False
+        self._diag_started_printed = False
+
+    def enable_diagnostics(self, file_path: str) -> None:
+        """Enable CSV diagnostics logging to the specified file."""
+        self._diag_enabled = True
+        self._diag_file = file_path
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        # Open file and write header lazily on first write
+        self._diag_writer = open(file_path, 'w', newline='')
+        writer = csv.writer(self._diag_writer)
+        # Header: time, dt, policy, metrics, per-joint q/dq/target
+        header = [
+            't', 'dt', 'policy',
+            'max_delta', 'allowed_jump', 'max_delta_joint',
+        ]
+        # Per-joint columns
+        for name in self.joint_names:
+            header.append(f"q_{name}")
+        for name in self.joint_names:
+            header.append(f"dq_{name}")
+        for name in self.joint_names:
+            header.append(f"target_{name}")
+        writer.writerow(header)
+        self._diag_writer.flush()
+        self._diag_header_written = True
+
+    def _log_step(self, joint_pos: np.ndarray, joint_vel: np.ndarray, targets: np.ndarray) -> None:
+        if not self._diag_enabled or self._diag_writer is None:
+            return
+        writer = csv.writer(self._diag_writer)
+        t = time.time()
+        row = [
+            f"{t:.6f}", f"{self._last_dt:.6f}", str(self._current_policy_path),
+            f"{self._last_max_position_delta:.6f}", f"{self._last_allowed_jump:.6f}", str(self._last_position_jump_joint),
+        ]
+        # Per-joint values
+        row.extend([f"{float(v):.6f}" for v in joint_pos])
+        row.extend([f"{float(v):.6f}" for v in joint_vel])
+        row.extend([f"{float(v):.6f}" for v in targets])
+        writer.writerow(row)
+        self._diag_writer.flush()
+        if not self._diag_started_printed:
+            print(f"[DIAG] Logging started (first row written) -> {self._diag_file}")
+            self._diag_started_printed = True
 
     def _update_default_positions_from_map(self, defaults_map: dict[str, float]) -> None:
         """Rebuild default joint position tensors from a name->value map."""
@@ -864,6 +943,14 @@ class StandalonePolicyController:
         
         Returns True if safe, False if safety violation detected.
         """
+        # Time-aware dt (wall clock) for parity with deploy_real.py
+        now = time.time()
+        dt = now - self._last_sample_time
+        if dt <= 0:
+            dt = 1e-4
+        self._last_sample_time = now
+        self._last_dt = dt
+
         if not self._safety_initialized:
             # First iteration - just store current state
             self._prev_joint_pos = joint_pos.copy()
@@ -871,21 +958,30 @@ class StandalonePolicyController:
             self._safety_initialized = True
             return True
         
-        # Check 1: Position jumps
+        # Check 1: Absolute position jumps scaled by actual dt
         position_delta = np.abs(joint_pos - self._prev_joint_pos)
-        max_position_delta = np.max(position_delta)
-        position_jump_joint = np.argmax(position_delta)
+        max_position_delta = float(np.max(position_delta))
+        position_jump_joint = int(np.argmax(position_delta))
+        allowed_jump = self._max_pos_rate * dt
+        self._last_max_position_delta = max_position_delta
+        self._last_allowed_jump = allowed_jump
+        self._last_position_jump_joint = position_jump_joint
         
-        if max_position_delta > self._max_position_jump:
+        if max_position_delta > allowed_jump:
             joint_name = self.joint_names[position_jump_joint]
             print("\n" + "=" * 60)
-            print("⚠️  SAFETY VIOLATION: POSITION JUMP DETECTED! ⚠️")
+            print("⚠️  SAFETY VIOLATION: POSITION JUMP DETECTED (ABSOLUTE)! ⚠️")
             print("=" * 60)
-            print(f"{joint_name} (joint {position_jump_joint}) jumped {max_position_delta:.3f} rad in one timestep")
-            print(f"(threshold: {self._max_position_jump:.3f} rad)")
+            print(f"{joint_name} (joint {position_jump_joint}) jumped {max_position_delta:.3f} rad over {dt*1000:.1f} ms")
+            print(f"(limit: {allowed_jump:.3f} = {self._max_pos_rate:.1f} rad/s * dt)")
             print(f"Current pos: {joint_pos[position_jump_joint]:.3f}, Previous: {self._prev_joint_pos[position_jump_joint]:.3f}")
             print("⚠️  THIS WOULD TRIGGER DAMPED MODE ON REAL ROBOT! ⚠️")
             print("=" * 60 + "\n")
+        
+        # Track rolling 1-second max position jump
+        if max_position_delta > self._rolling_max_jump:
+            self._rolling_max_jump = float(max_position_delta)
+            self._rolling_max_jump_joint = int(position_jump_joint)
         
         # Check 2: Velocity spikes
         velocity_magnitude = np.abs(joint_vel)
@@ -922,6 +1018,26 @@ class StandalonePolicyController:
         self._prev_joint_pos = joint_pos.copy()
         self._prev_joint_vel = joint_vel.copy()
         
+        # Rolling window logging (every ~1s)
+        self._rolling_time += self._control_dt
+        if self._rolling_time >= 1.0:
+            if self._rolling_max_jump_joint >= 0:
+                joint_name = self.joint_names[self._rolling_max_jump_joint]
+                print(f"[SAFETY] 1s max position jump: {self._rolling_max_jump:.3f} rad @ {joint_name}")
+            else:
+                print("[SAFETY] 1s max position jump: 0.000 rad")
+            if self._rolling_clamp_joint >= 0:
+                joint_name = self.joint_names[self._rolling_clamp_joint]
+                print(f"[SAFETY] 1s max target clamp: {self._rolling_clamp_max_diff:.3f} rad @ {joint_name}")
+            else:
+                print("[SAFETY] 1s max target clamp: 0.000 rad")
+            # Reset rolling window
+            self._rolling_time = 0.0
+            self._rolling_max_jump = 0.0
+            self._rolling_max_jump_joint = -1
+            self._rolling_clamp_max_diff = 0.0
+            self._rolling_clamp_joint = -1
+        
         # Return True even if violations found (just warn, don't stop sim)
         return True
     
@@ -944,20 +1060,20 @@ class StandalonePolicyController:
         # Clamp to joint limits
         targets = torch.clamp(targets_unclamped, self.joint_limits_lower, self.joint_limits_upper)
         
-        # Check for clamping and warn
+        # Track clamping for rolling 1s summary (suppress per-step prints)
         clamped_mask = (targets != targets_unclamped)
         if clamped_mask.any():
-            clamped_indices = torch.where(clamped_mask)[0].cpu().numpy()
-            print("WARNING: Clamping motor targets for joints:")
-            for idx in clamped_indices:
-                joint_name = self.joint_names[idx]
-                unclamped_val = targets_unclamped[idx].item()
-                clamped_val = targets[idx].item()
-                lower_limit = self.joint_limits_lower[idx].item()
-                upper_limit = self.joint_limits_upper[idx].item()
-                print(f"  {joint_name}: {unclamped_val:.3f} -> {clamped_val:.3f} (limits: [{lower_limit:.3f}, {upper_limit:.3f}])")
+            diffs = torch.abs(targets - targets_unclamped)
+            step_max_diff_val = diffs.max().item()
+            step_max_diff_idx = int(torch.argmax(diffs).item())
+            if step_max_diff_val > self._rolling_clamp_max_diff:
+                self._rolling_clamp_max_diff = float(step_max_diff_val)
+                self._rolling_clamp_joint = step_max_diff_idx
         
-        return targets.cpu().numpy()
+        targets_np = targets.cpu().numpy()
+        # Diagnostics logging
+        self._log_step(joint_pos=joint_pos, joint_vel=joint_vel, targets=targets_np)
+        return targets_np
 
 
 def load_initial_pose(json_path: Path, mj_model: mujoco.MjModel, data: mujoco.MjData):
@@ -1128,6 +1244,25 @@ def main():
         kd_multiplier_upper=kd_multiplier_upper,
         policy_defaults_map=policy_defaults_map,
     )
+
+    # Enable diagnostics logging if configured
+    if CONFIG.get("diag_log", False):
+        diag_file = CONFIG.get("diag_file", "")
+        if not diag_file:
+            # Build absolute diagnostics directory under project root
+            project_root = Path(__file__).resolve().parents[1]
+            diag_dir_cfg = CONFIG.get("diag_dir", "outputs/diagnostics")
+            diag_dir = Path(diag_dir_cfg)
+            if not diag_dir.is_absolute():
+                diag_dir = project_root / diag_dir
+            os.makedirs(str(diag_dir), exist_ok=True)
+            diag_prefix = CONFIG.get("diag_prefix", "sim2sim")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            diag_file = str(diag_dir / f"{diag_prefix}_{ts}.csv")
+        controller.enable_diagnostics(diag_file)
+        print(f"[INFO] Diagnostics logging enabled: {diag_file}")
+    else:
+        print("[INFO] Diagnostics logging disabled")
     
     # Launch viewer
     print("[INFO] Launching viewer...")
