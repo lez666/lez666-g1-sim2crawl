@@ -309,7 +309,7 @@ class RewardsCfg:
     """Reward terms for the MDP."""
     
     # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-1.0)
+    # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-4,  params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -345,13 +345,24 @@ class RewardsCfg:
         func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
     )
 
+    # small_command_responsiveness = RewTerm(
+    #     func=mdp.small_command_responsiveness,
+    #     weight=1.0,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "small_threshold": 0.2,
+    #         "min_threshold": 0.01,
+    #         "std": 0.1,
+    #     },
+    # )
+
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
         weight=.1,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.4,
+            "threshold": 0.2,
         },
     )
 

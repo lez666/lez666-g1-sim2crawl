@@ -9,7 +9,7 @@ from isaaclab.assets import AssetBaseCfg
 import isaaclab.sim as sim_utils
 from isaaclab.devices import Se2Gamepad, Se2GamepadCfg
 
-from g1_crawl.tasks.manager_based.g1_crawl.g1 import G1_STAND_CFG
+from g1_crawl.tasks.manager_based.g1_crawl.g1 import G1_CFG
 
 import json
 import math
@@ -25,19 +25,29 @@ import omni.appwindow
 # ==== Policy list configuration ====
 # Add your policy paths here to cycle through them with N/P keys
 POLICY_PATHS = [
-    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_z4AI/2025-10-29_09-14-56_rRPh/exported/policy.pt",
-    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_z4AI/2025-10-29_09-45-41_9q-J/exported/policy.pt",
-    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_z4AI/2025-10-29_10-16-35_mSMn/exported/policy.pt",
-    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_z4AI/2025-10-29_10-48-16_Yk3B/exported/policy.pt",
-    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_22-57-00_qJdS/exported/policy.pt",
-    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_NC2K/2025-10-28_20-52-53_n-Km/exported/policy.pt",
-    # "deployment/policies/policy_crawl.pt",
-    # "deployment/policies/policy_crawl_start.pt",
-    # "deployment/policies/policy_shamble.pt",
+    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-crawl-bidirectional_IIPA/2025-10-22_12-13-36_OSPN/exported/policy.pt",
+    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-crawl-bidirectional_IIPA/2025-10-22_12-53-18_7DTM/exported/policy.pt",
+    "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-crawl-bidirectional_IIPA/2025-10-22_13-33-06_ioAo/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-31_00-47-27_kVQ3/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-31_00-04-55_KwJ_/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-30_23-22-45_35Ex/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-30_22-40-15_3D4F/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-30_21-57-42_n_iN/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-30_21-14-16_9IS5/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-30_20-32-47_ZiBe/exported/policy.pt",
+    # "/home/logan/Projects/g1_crawl/logs/rsl_rl/g1-locomotion-sweep_7Fro/2025-10-30_19-50-46_oLmK/exported/policy.pt",
 ]
 
 # ==== Command range configuration (easy to tweak) ====
 # Raw SE2 gamepad outputs are clamped to these ranges before mapping to the policy inputs.
+CMD_MIN_VX = 0.0
+CMD_MAX_VX = 0.
+CMD_MIN_VY = 0.
+CMD_MAX_VY = 2.0
+# CMD_MIN_VX = -0.3
+# CMD_MAX_VX = 0.3
+# CMD_MIN_VY = -0.3
+# CMD_MAX_VY = 0.3
 CMD_MIN_VX = -1.0
 CMD_MAX_VX = 1.0
 CMD_MIN_VY = -1.0
@@ -129,11 +139,11 @@ def create_scene_cfg():
         dome_light = AssetBaseCfg(
             prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
         )
-        Robot = G1_STAND_CFG.replace(
+        Robot = G1_CFG.replace(
             prim_path="{ENV_REGEX_NS}/Robot",
-            spawn=G1_STAND_CFG.spawn.replace(
-                rigid_props=G1_STAND_CFG.spawn.rigid_props.replace(disable_gravity=False),
-                articulation_props=G1_STAND_CFG.spawn.articulation_props.replace(fix_root_link=False),
+            spawn=G1_CFG.spawn.replace(
+                rigid_props=G1_CFG.spawn.rigid_props.replace(disable_gravity=False),
+                articulation_props=G1_CFG.spawn.articulation_props.replace(fix_root_link=False),
             ),
         )
 
@@ -570,7 +580,7 @@ def main():
         action="append",
         help="(Optional) Override POLICY_PATHS - specify policy .pt file(s) via CLI instead"
     )
-    parser.add_argument("--pose", type=str, default="assets/default-pose.json", help="Path to pose JSON for initial/reset pose")
+    parser.add_argument("--pose", type=str, default="assets/crawl-pose.json", help="Path to pose JSON for initial/reset pose")
     parser.add_argument("--no-gamepad", action="store_true", help="Disable SE2 gamepad")
     parser.add_argument("--debug-gamepad", action="store_true", help="Print gamepad inputs and mapped commands (throttled)")
     parser.add_argument("--no-clamp-warnings", action="store_true", help="Silence clamping warnings for motor targets")

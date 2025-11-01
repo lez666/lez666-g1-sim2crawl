@@ -1140,7 +1140,7 @@ def feet_air_time_positive_biped(env, command_name: str, threshold: float, senso
     reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
     reward = torch.clamp(reward, max=threshold)
     # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
+    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) > 0.01
     return reward
 
 
@@ -1663,6 +1663,57 @@ def track_lin_vel_xy_yaw_frame_exp(
     return torch.exp(-lin_vel_error / std**2)
 
 
+def small_command_responsiveness(
+    env,
+    command_name: str,
+    small_threshold: float = 0.2,
+    min_threshold: float = 0.01,
+    std: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward responsiveness to small non-zero velocity commands.
+    
+    This term activates when commanded velocity magnitude is between min_threshold 
+    and small_threshold, encouraging the robot to move rather than remain stationary.
+    It rewards having non-zero base velocity in the commanded direction.
+    
+    This prevents the robot from ignoring small commands and helps it respond to 
+    fine-grained velocity control.
+    
+    Args:
+        env: Environment instance.
+        command_name: Name of velocity command (expects [vx, vy, vz] format).
+        small_threshold: Upper threshold for "small" commands (default: 0.2 m/s).
+        min_threshold: Lower threshold to ignore truly zero commands (default: 0.01 m/s).
+        std: Standard deviation for exponential reward kernel (default: 0.1).
+        asset_cfg: Robot asset configuration.
+    
+    Returns:
+        Reward in [0, 1] when command is small, 0 otherwise.
+    """
+    asset = env.scene[asset_cfg.name]
+    
+    # Get commanded velocity magnitude (xy plane)
+    cmd = env.command_manager.get_command(command_name)[:, :2]  # [N, 2]
+    cmd_mag = torch.norm(cmd, dim=1)  # [N]
+    
+    # Only activate for small non-zero commands
+    is_small = (cmd_mag >= min_threshold) & (cmd_mag <= small_threshold)
+    
+    # Get actual velocity in yaw frame (xy plane)
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
+    vel_xy = vel_yaw[:, :2]  # [N, 2]
+    vel_mag = torch.norm(vel_xy, dim=1)  # [N]
+    
+    # Reward having velocity in roughly the commanded direction
+    # Use exponential kernel centered on matching the command magnitude
+    vel_error = torch.square(vel_mag - cmd_mag)
+    reward = torch.exp(-vel_error / (std ** 2))
+    
+    # Only apply reward when in small command regime
+    return reward * is_small.float()
+
+
 # def track_ang_vel_z_world_exp(
 #     env, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 # ) -> torch.Tensor:
@@ -1898,4 +1949,90 @@ def pose_json_deviation_l1_two_stage(
         blend = (steps >= delay_steps).to(dtype=penalty_before.dtype)
 
     # Linear interpolation: (1-blend)*penalty_before + blend*penalty_after
+    return (1.0 - blend) * penalty_before + blend * penalty_after
+
+
+def pose_json_deviation_l1_align_plus_x_lerp(
+    env: ManagerBasedRLEnv,
+    pose_path_before: str = "assets/crawl-pose.json",
+    pose_path_after: str = "assets/stand-pose.json",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    invert: bool = False,
+    blend_start: float = 0.0,
+    blend_end: float = 1.0,
+) -> torch.Tensor:
+    """L1 penalty that blends between two target poses based on orientation alignment.
+
+    Uses the projected gravity in base frame ``g_b = asset.data.projected_gravity_b`` and
+    computes alignment with +X axis. The alignment score is mapped to a blend weight in [0, 1]:
+
+        blend = clamp( (align + 1) / 2, 0, 1 ) = clamp( 1 - 0.25 * ||g_b - [1,0,0]||^2, 0, 1 )
+
+    By default (invert=False):
+      - blend -> 0 when misaligned (use ``pose_path_before``)
+      - blend -> 1 when aligned with +X (use ``pose_path_after``)
+
+    If ``invert=True``, the mapping is flipped (i.e., aligned -> before, misaligned -> after).
+
+    Interpolation is controlled by a misalignment "percent" window [blend_start, blend_end] in [0, 1],
+    where percent p is based on ``misalign_projected_gravity_plus_x_l2`` normalized and clamped to [0, 1]:
+
+        p = clamp( 0.5 * ||g_b - [1,0,0]||^2, 0, 1 ) = clamp(1 - cos(theta), 0, 1)
+
+    p=0 when aligned with +X (crawl), p≈1 when orthogonal (stand), and p=1 when opposite (clamped).
+    The blend saturates to 1 below blend_start and to 0 above blend_end, with linear interpolation in between.
+
+    Args:
+        env: RL environment.
+        pose_path_before: JSON pose for low-alignment regime.
+        pose_path_after: JSON pose for high-alignment regime.
+        asset_cfg: Scene entity for the robot asset.
+        invert: If True, swap which pose is selected by high alignment.
+
+    Returns:
+        Tensor of shape (num_envs,) with L1 deviation penalty from orientation-dependent target pose.
+    """
+    # Joint-space targets
+    asset: Articulation = env.scene[asset_cfg.name]
+    target_before_full = _get_full_target_vector(pose_path_before, asset)
+    target_after_full = _get_full_target_vector(pose_path_after, asset)
+
+    joint_pos_sel = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    target_before_sel = target_before_full[asset_cfg.joint_ids].to(
+        device=joint_pos_sel.device, dtype=joint_pos_sel.dtype
+    )
+    target_after_sel = target_after_full[asset_cfg.joint_ids].to(
+        device=joint_pos_sel.device, dtype=joint_pos_sel.dtype
+    )
+
+    if not torch.isfinite(joint_pos_sel).all():
+        raise RuntimeError("Non-finite joint positions in pose_json_deviation_l1_align_plus_x_lerp")
+
+    # Per-branch L1 penalties
+    penalty_before = torch.sum(torch.abs(joint_pos_sel - target_before_sel), dim=1)
+    penalty_after = torch.sum(torch.abs(joint_pos_sel - target_after_sel), dim=1)
+
+    # Orientation-based blend using projected gravity in base frame
+    rob: RigidObject = env.scene[asset_cfg.name]
+    g_b = rob.data.projected_gravity_b  # (num_envs, 3)
+    target = torch.tensor([1.0, 0.0, 0.0], dtype=g_b.dtype, device=g_b.device)
+    dist_sq = torch.sum(torch.square(g_b - target), dim=1)  # in [0, 4]
+
+    # Misalignment percent p in [0, 1]: 0 at perfect alignment, ~1 at orthogonal, 1 at opposite (clamped)
+    misalign = 0.5 * dist_sq  # = 1 - cos(theta)
+    p = torch.clamp(misalign, min=0.0, max=1.0)
+
+    start = float(blend_start)
+    end = float(blend_end)
+    if not (0.0 <= start < end <= 1.0):
+        raise RuntimeError("pose_json_deviation_l1_align_plus_x_lerp requires 0 <= blend_start < blend_end <= 1")
+    denom = max(1e-6, (end - start))
+
+    # Linear map p from [start..end] -> [0..1], then convert to blend (1 - t)
+    t = (p - start) / denom
+    t = torch.clamp(t, min=0.0, max=1.0)
+    blend = 1.0 - t
+    if invert:
+        blend = 1.0 - blend
+
     return (1.0 - blend) * penalty_before + blend * penalty_after

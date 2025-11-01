@@ -13,7 +13,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 1000
     save_interval = 250
-    experiment_name = "g1_shamble_anything"
+    experiment_name = "g1_crawl"
     empirical_normalization = False
     clip_actions = 5.0
     policy = RslRlPpoActorCriticCfg(

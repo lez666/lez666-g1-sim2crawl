@@ -308,12 +308,12 @@ class RewardsCfg:
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1e-4)
 
-    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1e-7, params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #         )
-    #     }
-    # )
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1e-7, params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+            )
+        }
+    )
     # Safety-aligned penalties (match deploy/runtime warnings)
     # Penalize absolute position jump rate violations (|Δq|/dt > 15 rad/s)
     # pos_rate_violation = RewTerm(
@@ -415,13 +415,14 @@ class RewardsCfg:
     # )
 
     pose_deviation = RewTerm(
-        func=mdp.pose_json_deviation_l1_two_stage,
+        func=mdp.pose_json_deviation_l1_align_plus_x_lerp,
         weight=-0.1,
         params={
             "pose_path_before": "assets/default-pose.json",
-            "pose_path_after": "assets/crawl-pose.json", 
-            "delay_s": 2.,
-            "ramp_s": 0.25,
+            "pose_path_after": "assets/crawl-pose.json",
+            # Percent window approximating ~10°–80°: 1-cos(10°)≈0.02, 1-cos(80°)≈0.83
+            "blend_start": 0.02,
+            "blend_end": 0.83
         }
     )
         

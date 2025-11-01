@@ -18,21 +18,22 @@ AUTO_SUSPEND = True  # Set to True to automatically suspend after all sweeps com
 # Note: A 4-character nanoid will be automatically added to experiment names for uniqueness
 #       (e.g., "g1-crawl-start-sweep" becomes "g1-crawl-start-sweep_a1b2")
 SWEEP_QUEUE = [
-    # {
-    #     "task_name": "g1-shamble-start",
-    #     "experiment_name": "g1-shamble-start-sweep",  # Nanoid will be auto-appended
-    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-    #     "sweep_params": {
-    #         #  "env.rewards.flat_orientation_l2.weight": [-3.0],
-    #          "env.rewards.com_centered_over_feet.weight": [1.0, 1e-1, 0.0],
-    #          "env.rewards.dof_acc_l2.weight": [-1e-1, -1e-2, 0.0],
+    {
+        "task_name": "g1-crawl",
+        "experiment_name": "g1-crawl-sweep",  # Nanoid will be auto-appended
+        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+        "sweep_params": {
+            #  "env.rewards.flat_orientation_l2.weight": [-3.0],
+            "env.rewards.base_height_l2": ['__OMIT__', 'null'],
+            "env.rewards.flat_orientation_l2": ['__OMIT__', 'null'],
 
-    #          "agent.max_iterations": [2500],
 
-    #     },
-    #     "sweep_param_sets": [],
-    #     "exclude_rules": [],
-    # },
+             "agent.max_iterations": [2500],
+
+        },
+        "sweep_param_sets": [],
+        "exclude_rules": [],
+    },
 
 
     # {
@@ -72,72 +73,85 @@ SWEEP_QUEUE = [
     #     "exclude_rules": [],
     # },
 
-    # {
+    #  {
     #     "task_name": "g1-locomotion",
     #     "experiment_name": "g1-locomotion-sweep",  # Nanoid will be auto-appended
     #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
     #     "sweep_params": {
     #         # "env.terminations.base_contact.params.sensor_cfg.body_names": ["torso_link","__OMIT__"],
-    #          "env.rewards.track_lin_vel_xy_exp.weight": [ 1.0, 2.0 ],
-    #         "env.rewards.track_ang_vel_z_exp.weight":  [  1.0, 2.0 ],
+    #          "agent.max_iterations": [3500],
+    #          "env.commands.base_velocity.resampling_time_range": [ [3.0,8.0], [0.2,5.0] ],
 
-    #          "agent.max_iterations": [2500],
     #         #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
-
     #     },
     #     "sweep_param_sets": [
-    #         # [
-    #         #     {
-    #         #         "env.rewards.joint_deviation_hip.weight": -0.1,
-    #         #         "env.rewards.joint_deviation_arms.weight": -0.2,
-    #         #         "env.rewards.joint_deviation_torso.weight": -0.1,
-    #         #         "env.rewards.joint_deviation_all.weight": 0.0,
-    #         #     },
-    #         #     {
-    #         #         "env.rewards.joint_deviation_hip.weight": 0.0,
-    #         #         "env.rewards.joint_deviation_arms.weight": 0.0,
-    #         #         "env.rewards.joint_deviation_torso.weight": 0.0,
-    #         #         "env.rewards.joint_deviation_all.weight": -0.1,
-    #         #     }
-    #         #     ,
-    #         #     {
-    #         #         "env.rewards.joint_deviation_hip.weight": 0.0,
-    #         #         "env.rewards.joint_deviation_arms.weight": 0.0,
-    #         #         "env.rewards.joint_deviation_torso.weight": 0.0,
-    #         #         "env.rewards.joint_deviation_all.weight": -0.3,
-    #         #     }
-    #         # ],
+    #         [
+    #             {
+    #                 "env.rewards.track_lin_vel_xy_exp.params.std": 0.5,
+    #                 "env.rewards.track_ang_vel_z_exp.params.std":  0.5,
+    #                 "env.rewards.feet_air_time.params.threshold":  0.2,
+    #             },
+    #             {
+    #                 "env.rewards.track_lin_vel_xy_exp.params.std": 0.25,
+    #                 "env.rewards.track_ang_vel_z_exp.params.std":  0.5,
+    #                 "env.rewards.feet_air_time.params.threshold":  0.1,
+    #             }
+    #         ],
+    #                   [
+    #             {
+    #                 "env.commands.base_velocity.ranges.lin_vel_x": [-1.0,1.0] ,
+    #                 "env.commands.base_velocity.ranges.lin_vel_y": [-0.5,0.5] ,
+
+    #             },
+    #             {
+    #                 "env.commands.base_velocity.ranges.lin_vel_x": [-0.3,0.3] ,
+    #                 "env.commands.base_velocity.ranges.lin_vel_y": [-0.3,0.3] ,
+    #             }
+    #         ],
     #     ],
     #     "exclude_rules": [],
     # },
-        {
-        "task_name": "g1-crawl-start",
-        "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
-        "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
-        "sweep_params": {
+   
+    # {
+    #     "task_name": "g1-crawl-start",
+    #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
+    #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume
+    #     "sweep_params": {
 
-            # "env.rewards.acc_violation.weight": [ -0.1,0.0],
+    #         "env.rewards.dof_acc_l2.weight": [ -1e-7, -1e-6],
 
-            # "env.rewards.either_foot_off_ground.weight":  [ -3.0, -1.0, -0.3],
-            "env.rewards.pose_deviation.weight": [ -0.3, -0.1],
-            "env.rewards.pose_deviation.params.delay_s": [ 1.0, 2.0 ],
-            "env.rewards.pose_deviation.params.ramp_s": [ 0.0, 0.25 ],
+
+    #         # "env.rewards.either_foot_off_ground.weight":  [ -3.0, -1.0, -0.3],
+    #         # "env.rewards.pose_deviation.weight": [ -0.3, -0.1],
+    #         # "env.rewards.pose_deviation.params.delay_s": [ 1.0, 2.0 ],
+    #         # "env.rewards.pose_deviation.params.ramp_s": [ 0.0, 0.25 ],
 
 
             
 
-            #  "env.rewards.pose_deviation_all.weight": [-1.0, 0.0],
-            #  "env.rewards.flat_orientation_l2.weight": [1.0,0.3],
-            #  "env.rewards.base_height_l2.weight": [-1.0,-0.3,-0.1],
+    #         #  "env.rewards.pose_deviation_all.weight": [-1.0, 0.0],
+    #         #  "env.rewards.flat_orientation_l2.weight": [1.0,0.3],
+    #         #  "env.rewards.base_height_l2.weight": [-1.0,-0.3,-0.1],
 
-             "agent.max_iterations": [1000],
-            #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
+    #          "agent.max_iterations": [1500],
+    #         #  "env.rewards.flat_orientation_l2.weight": [ 0.1, 0.0, -.1],
 
-        },
-        "sweep_param_sets": [],
-        "exclude_rules": [],
-    },
-        # {
+    #     },
+    #     "sweep_param_sets": [
+    #         [
+    #             {
+    #                 "env.rewards.pose_deviation.params.blend_start": 0.02,
+    #                 "env.rewards.pose_deviation.params.blend_end": 0.83,
+    #             },
+    #             {
+    #                 "env.rewards.pose_deviation.params.blend_start": 0.2,
+    #                 "env.rewards.pose_deviation.params.blend_end": 0.6,
+    #             },
+    #         ],
+    #     ],
+    #     "exclude_rules": [],
+    # }
+    #     {
     #     "task_name": "g1-crawl-start",
     #     "experiment_name": "g1-crawl-start-sweep",  # Nanoid will be auto-appended
     #     "start_from_run": 1,  # Set to 1 to start from beginning, or higher to resume

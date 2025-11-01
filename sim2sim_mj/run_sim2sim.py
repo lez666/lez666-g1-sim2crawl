@@ -58,7 +58,7 @@ CONFIG = {
     "use_gamepad": True,
     
     # Max forward/backward velocity (m/s) - scaled by left stick Y
-    "max_lin_vel": 1.0,
+    "max_lin_vel": 2.0,
     
     # Max lateral velocity (m/s) - scaled by left stick X
     "max_lat_vel": 1.0,
@@ -114,10 +114,10 @@ CONFIG = {
     # Group-based KP/KD multipliers applied to MuJoCo actuators
     # Legs: hips, knees, ankles
     # Upper: waist + shoulders, elbows, wrists
-    "kp_multiplier_legs": 1.0,
-    "kd_multiplier_legs": 1.0,
-    "kp_multiplier_upper": 1.0,
-    "kd_multiplier_upper": 1.0,
+    "kp_multiplier_legs": 1.4,
+    "kd_multiplier_legs": 1.4,
+    "kp_multiplier_upper": 1.4,
+    "kd_multiplier_upper": 1.4,
     
     # Amount to change multipliers per button press
     "gain_step": 0.05,
