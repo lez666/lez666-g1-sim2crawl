@@ -35,7 +35,6 @@ docker/.container.cfg
 **/output/*
 **/outputs/*
 **/sweep-logs/*
-**/videos/*
 **/wandb/*
 **/.neptune/*
 docker/artifacts/
