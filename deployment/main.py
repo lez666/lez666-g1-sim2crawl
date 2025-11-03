@@ -41,8 +41,6 @@ import argparse
 import select
 import numpy as np
 import torch
-import logging
-from datetime import datetime
 
 NETWORK_CARD_NAME = 'eth0'
 
@@ -68,27 +66,50 @@ POLICY_DEFAULTS = {
     # "policies/policy_shamble_start.pt": "stand",
 }
 
+# Velocity command limits per policy (m/s for linear, rad/s for angular)
+# Each axis is specified as (min, max) to support asymmetric ranges
+POLICY_VELOCITY_LIMITS = {
+    "policies/policy_shamble.pt": {"forward": (-0.3, 0.3), "lateral": (-0.3, 0.3), "yaw": (-1.0, 1.0)},
+    "policies/policy_crawl_start.pt": {"forward": (0.0, 0.0), "lateral": (0.0, 0.0), "yaw": (0.0, 0.0)},
+    "policies/policy_crawl.pt": {"forward": (0.0, 1.9), "lateral": (-0.1, 0.1), "yaw": (-1.0, 1.0)},
+    # "policies/policy_shamble_start.pt": {"forward": (-0.3, 0.3), "lateral": (-0.3, 0.3), "yaw": (-0.3, 0.3)},
+}
+
+# Gain multipliers per policy (single value applied to both KP and KD)
+POLICY_GAIN_MULTIPLIERS = {
+    "policies/policy_shamble.pt": 1.4,
+    "policies/policy_crawl_start.pt": 1.2,
+    "policies/policy_crawl.pt": 1.4,
+    # "policies/policy_shamble_start.pt": 1.2,
+}
+
 # Safety flag: set to False to test state logic without moving motors
 ENABLE_MOTOR_COMMANDS = True
+
+# Safety monitoring: set to False to disable auto-damping on position/velocity/acceleration violations
+# Note: Remote heartbeat monitoring is always enabled regardless of this setting
+ENABLE_SAFETY_MONITORING = False
 
 # Policy cycling behavior: if False, stops at last policy instead of looping back to first
 # Useful to prevent accidental return to first policy before transition is smooth
 LOOP_POLICIES = False
 
-# Velocity command limits (scaled by gamepad sticks)
-MAX_LIN_VEL_FORWARD = 1.  # m/s - Max forward/backward velocity (left stick Y)
-MAX_LIN_VEL_LATERAL = 1.  # m/s - Max lateral velocity (left stick X)
-MAX_ANG_VEL_YAW = 1.      # rad/s - Max angular velocity (right stick X)
+# NOTE: Velocity command limits are now policy-dependent (see POLICY_VELOCITY_LIMITS above)
+# These old global constants are no longer used
+# MAX_LIN_VEL_FORWARD = 1.  # m/s - Max forward/backward velocity (left stick Y)
+# MAX_LIN_VEL_LATERAL = 1.  # m/s - Max lateral velocity (left stick X)
+# MAX_ANG_VEL_YAW = 1.      # rad/s - Max angular velocity (right stick X)
 
 # Transition timing (seconds) - smooth lerping between modes
 TRANSITION_TIME_HOLD_POSES = 2.0  # For default_pos and crawl_pos modes
 TRANSITION_TIME_POLICY = 0.5      # For policy mode
 
-# KP/KD multipliers for tuning responsiveness (legs vs upper body)
-KP_MULTIPLIER_LEGS = 1.0
-KD_MULTIPLIER_LEGS = 1.0
-KP_MULTIPLIER_UPPER = 1.0
-KD_MULTIPLIER_UPPER = 1.0
+# NOTE: Gain multipliers are now policy-dependent (see POLICY_GAIN_MULTIPLIERS above)
+# These old global constants are no longer used
+# KP_MULTIPLIER_LEGS = 1.2
+# KD_MULTIPLIER_LEGS = 1.2
+# KP_MULTIPLIER_UPPER = 1.2
+# KD_MULTIPLIER_UPPER = 1.2
 
 GAIN_STEP = 0.1
 
@@ -99,9 +120,9 @@ GAIN_STEP = 0.1
 #   RIGHT: policy      - Active neural network control
 #
 # Velocity commands (in policy mode):
-#   Left stick Y:  Forward/backward velocity (±MAX_LIN_VEL_FORWARD)
-#   Left stick X:  Lateral velocity/strafe (±MAX_LIN_VEL_LATERAL)
-#   Right stick X: Angular velocity/yaw rotation (±MAX_ANG_VEL_YAW)
+#   Left stick Y:  Forward/backward velocity (policy-dependent limits)
+#   Left stick X:  Lateral velocity/strafe (policy-dependent limits)
+#   Right stick X: Angular velocity/yaw rotation (policy-dependent limits)
 # ============================================================================
 
 
@@ -218,9 +239,6 @@ class Controller:
         self.action = np.zeros(G1_NUM_MOTOR, dtype=np.float32)  # In MuJoCo order
         self.last_action_pytorch = np.zeros(G1_NUM_MOTOR, dtype=np.float32)  # In PyTorch order
         self.counter = 0
-        
-        # Setup logging
-        self._setup_logging()
 
         # Convert joint range tuples to numpy arrays for efficient clamping
         joint_limits = np.array(RESTRICTED_JOINT_RANGE, dtype=np.float32)
@@ -251,10 +269,6 @@ class Controller:
         # Debug logging
         self._last_debug_print_time = time.time()
         self._debug_print_interval = 1.0  # Print debug info every second
-        
-        # Joint logging interval (seconds)
-        self._last_joint_log_time = time.time()
-        self._joint_log_interval = 0.5  # Log joint positions every 0.5 seconds
 
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()
         self.low_state = unitree_hg_msg_dds__LowState_()
@@ -270,13 +284,10 @@ class Controller:
         self.crawl_angles_array = np.array(crawl_angles)
         self.default_angles_array = np.array(default_angles_config)
 
-        # Runtime-tunable gain multipliers
-        self.kp_multiplier_legs = float(KP_MULTIPLIER_LEGS)
-        self.kd_multiplier_legs = float(KD_MULTIPLIER_LEGS)
-        self.kp_multiplier_upper = float(KP_MULTIPLIER_UPPER)
-        self.kd_multiplier_upper = float(KD_MULTIPLIER_UPPER)
+        # Runtime-tunable gain multiplier (single value for both KP and KD)
+        self.gain_multiplier = 1.0  # Will be set by _apply_policy_config
 
-        # Compute initial scaled KP/KD arrays
+        # Compute initial scaled KP/KD arrays (will be updated by _apply_policy_config)
         self._recompute_gains()
 
         # Remote controller state
@@ -302,14 +313,34 @@ class Controller:
         self._policy_paths = POLICY_PATHS  # Store for display
         # Validate default mapping and apply for initial policy
         self._policy_defaults = dict(POLICY_DEFAULTS)
+        self._policy_velocity_limits = dict(POLICY_VELOCITY_LIMITS)
+        self._policy_gain_multipliers = dict(POLICY_GAIN_MULTIPLIERS)
         init_policy = self._policy_paths[self._current_policy_idx]
         if init_policy not in self._policy_defaults:
             available = ", ".join(sorted(self._policy_defaults.keys())) if self._policy_defaults else "(none)"
             raise KeyError(f"Initial policy '{init_policy}' missing from POLICY_DEFAULTS. Available: {available}")
+        if init_policy not in self._policy_velocity_limits:
+            available = ", ".join(sorted(self._policy_velocity_limits.keys())) if self._policy_velocity_limits else "(none)"
+            raise KeyError(f"Initial policy '{init_policy}' missing from POLICY_VELOCITY_LIMITS. Available: {available}")
+        if init_policy not in self._policy_gain_multipliers:
+            available = ", ".join(sorted(self._policy_gain_multipliers.keys())) if self._policy_gain_multipliers else "(none)"
+            raise KeyError(f"Initial policy '{init_policy}' missing from POLICY_GAIN_MULTIPLIERS. Available: {available}")
         for p in self._policy_paths:
             if p not in self._policy_defaults:
                 raise KeyError(f"Policy '{p}' missing from POLICY_DEFAULTS")
-        self._apply_default_set_for_policy(init_policy)
+            if p not in self._policy_velocity_limits:
+                raise KeyError(f"Policy '{p}' missing from POLICY_VELOCITY_LIMITS")
+            if p not in self._policy_gain_multipliers:
+                raise KeyError(f"Policy '{p}' missing from POLICY_GAIN_MULTIPLIERS")
+        
+        # Current velocity limits (will be set by _apply_policy_config)
+        # Each is a tuple of (min, max) to support asymmetric ranges
+        self.vel_forward_range = (0.0, 0.0)
+        self.vel_lateral_range = (0.0, 0.0)
+        self.vel_yaw_range = (0.0, 0.0)
+        
+        # Apply initial policy configuration
+        self._apply_policy_config(init_policy)
         
         # Transition state for smooth lerping between modes
         self._in_transition = False
@@ -321,57 +352,18 @@ class Controller:
         
         # Safety gate: require Start button press before allowing controls
         self._system_started = False
-        
-        # Log initial policy setup
-        self.logger.info("=" * 80)
-        self.logger.info(f"INITIAL POLICY: [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
-        self.logger.info(f"Default set: {self._policy_defaults.get(self._policy_paths[self._current_policy_idx])}")
-        self.logger.info(f"Total policies loaded: {len(self._policy_paths)}")
-        for idx, path in enumerate(self._policy_paths):
-            self.logger.info(f"  [{idx}] {path}")
-        self.logger.info("=" * 80)
-
-    def _setup_logging(self):
-        """Setup logging to file with timestamps."""
-        # Create logs directory if it doesn't exist
-        import os
-        os.makedirs("logs", exist_ok=True)
-        
-        # Create a unique log file with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"logs/robot_control_{timestamp}.log"
-        
-        # Setup logger
-        self.logger = logging.getLogger("RobotController")
-        self.logger.setLevel(logging.INFO)
-        
-        # File handler
-        file_handler = logging.FileHandler(log_filename)
-        file_handler.setLevel(logging.INFO)
-        
-        # Formatter
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        
-        # Add handler
-        self.logger.addHandler(file_handler)
-        
-        self.logger.info("=" * 80)
-        self.logger.info("Robot Controller Log Started")
-        self.logger.info(f"Log file: {log_filename}")
-        self.logger.info("=" * 80)
-        
-        print(f"Logging to: {log_filename}")
 
     def _recompute_gains(self):
         self._kp_scaled, self._kd_scaled = get_kp_kd_scaled(
-            kp_multiplier_legs=self.kp_multiplier_legs,
-            kd_multiplier_legs=self.kd_multiplier_legs,
-            kp_multiplier_upper=self.kp_multiplier_upper,
-            kd_multiplier_upper=self.kd_multiplier_upper,
+            kp_multiplier_legs=self.gain_multiplier,
+            kd_multiplier_legs=self.gain_multiplier,
+            kp_multiplier_upper=self.gain_multiplier,
+            kd_multiplier_upper=self.gain_multiplier,
         )
 
-    def _apply_default_set_for_policy(self, policy_path: str):
+    def _apply_policy_config(self, policy_path: str):
+        """Apply all policy-specific configuration: default positions, velocity limits, and gain multiplier."""
+        # Apply default position set
         set_name = self._policy_defaults.get(policy_path)
         if set_name == "stand":
             self.default_angles_array = np.array(stand_angles_config)
@@ -380,30 +372,27 @@ class Controller:
         else:
             valid = ", ".join(["stand", "crawl"]) 
             raise KeyError(f"Invalid default set '{set_name}' for policy '{policy_path}'. Valid: {valid}")
-
-    def adjust_gains(self, group: str, kind: str, delta: float):
-        if group == "legs":
-            if kind == "kp":
-                self.kp_multiplier_legs = max(0.0, self.kp_multiplier_legs + delta)
-            elif kind == "kd":
-                self.kd_multiplier_legs = max(0.0, self.kd_multiplier_legs + delta)
-            else:
-                raise ValueError("Unknown gain kind for legs: " + kind)
-        elif group == "upper":
-            if kind == "kp":
-                self.kp_multiplier_upper = max(0.0, self.kp_multiplier_upper + delta)
-            elif kind == "kd":
-                self.kd_multiplier_upper = max(0.0, self.kd_multiplier_upper + delta)
-            else:
-                raise ValueError("Unknown gain kind for upper: " + kind)
-        else:
-            raise ValueError("Unknown gain group: " + group)
-
+        
+        # Apply velocity limits (as ranges: (min, max))
+        vel_limits = self._policy_velocity_limits.get(policy_path)
+        if vel_limits is None:
+            raise KeyError(f"No velocity limits defined for policy '{policy_path}'")
+        self.vel_forward_range = tuple(vel_limits["forward"])
+        self.vel_lateral_range = tuple(vel_limits["lateral"])
+        self.vel_yaw_range = tuple(vel_limits["yaw"])
+        
+        # Apply gain multiplier
+        gain_mult = self._policy_gain_multipliers.get(policy_path)
+        if gain_mult is None:
+            raise KeyError(f"No gain multiplier defined for policy '{policy_path}'")
+        self.gain_multiplier = float(gain_mult)
         self._recompute_gains()
-        print(
-            f"Gains updated | legs: kp={self.kp_multiplier_legs:.2f} kd={self.kd_multiplier_legs:.2f}  "
-            f"upper: kp={self.kp_multiplier_upper:.2f} kd={self.kd_multiplier_upper:.2f}"
-        )
+
+    def adjust_gains(self, delta: float):
+        """Adjust the unified gain multiplier (applies to both KP and KD)."""
+        self.gain_multiplier = max(0.0, self.gain_multiplier + delta)
+        self._recompute_gains()
+        print(f"Gain multiplier updated: {self.gain_multiplier:.2f}")
 
 
     def _rising(self, name: str, current: int) -> bool:
@@ -645,36 +634,30 @@ class Controller:
             
             if LOOP_POLICIES:
                 # Loop back to first policy after last
-                old_idx = self._current_policy_idx
                 self._current_policy_idx = next_idx % num_policies
                 self.policy.set_policy_index(self._current_policy_idx)
                 new_policy = self._policy_paths[self._current_policy_idx]
                 print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {new_policy}")
-                # Log policy change
-                self.logger.info("=" * 60)
-                self.logger.info(f"POLICY CHANGE: [{old_idx}] -> [{self._current_policy_idx}]")
-                self.logger.info(f"New policy: {new_policy}")
-                self.logger.info(f"Default set: {self._policy_defaults.get(new_policy)}")
-                self.logger.info("=" * 60)
-                # Apply corresponding default set immediately
-                self._apply_default_set_for_policy(new_policy)
+                # Apply policy configuration (default positions, velocity limits, and gain multiplier)
+                self._apply_policy_config(new_policy)
+                print(f"  Velocity limits: forward=[{self.vel_forward_range[0]}, {self.vel_forward_range[1]}] m/s, "
+                      f"lateral=[{self.vel_lateral_range[0]}, {self.vel_lateral_range[1]}] m/s, "
+                      f"yaw=[{self.vel_yaw_range[0]}, {self.vel_yaw_range[1]}] rad/s")
+                print(f"  Gain multiplier: {self.gain_multiplier:.2f}")
                 self._safety_initialized = False
             else:
                 # Stop at last policy, don't loop back
                 if next_idx < num_policies:
-                    old_idx = self._current_policy_idx
                     self._current_policy_idx = next_idx
                     self.policy.set_policy_index(self._current_policy_idx)
                     new_policy = self._policy_paths[self._current_policy_idx]
                     print(f"A PRESSED: Cycled to policy [{self._current_policy_idx}] {new_policy}")
-                    # Log policy change
-                    self.logger.info("=" * 60)
-                    self.logger.info(f"POLICY CHANGE: [{old_idx}] -> [{self._current_policy_idx}]")
-                    self.logger.info(f"New policy: {new_policy}")
-                    self.logger.info(f"Default set: {self._policy_defaults.get(new_policy)}")
-                    self.logger.info("=" * 60)
-                    # Apply corresponding default set immediately
-                    self._apply_default_set_for_policy(new_policy)
+                    # Apply policy configuration (default positions, velocity limits, and gain multiplier)
+                    self._apply_policy_config(new_policy)
+                    print(f"  Velocity limits: forward=[{self.vel_forward_range[0]}, {self.vel_forward_range[1]}] m/s, "
+                          f"lateral=[{self.vel_lateral_range[0]}, {self.vel_lateral_range[1]}] m/s, "
+                          f"yaw=[{self.vel_yaw_range[0]}, {self.vel_yaw_range[1]}] rad/s")
+                    print(f"  Gain multiplier: {self.gain_multiplier:.2f}")
                     self._safety_initialized = False
                 else:
                     print(f"A PRESSED: Already at last policy [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
@@ -875,10 +858,20 @@ class Controller:
         lx = 0.0 if abs(lx) < deadzone else lx
         rx = 0.0 if abs(rx) < deadzone else rx
         
-        # Clip to [-1, 1] and scale by max velocities
-        lin_vel_z = np.clip(ly, -1.0, 1.0) * MAX_LIN_VEL_FORWARD
-        lin_vel_y = -np.clip(lx, -1.0, 1.0) * MAX_LIN_VEL_LATERAL
-        ang_vel_x = -np.clip(rx, -1.0, 1.0) * MAX_ANG_VEL_YAW
+        # Clip to [-1, 1] and scale by policy-specific velocity ranges (supports asymmetric ranges)
+        # Map stick value: stick=0 always maps to velocity=0
+        # Negative stick values map from -1→min_vel to 0→0
+        # Positive stick values map from 0→0 to 1→max_vel
+        ly_clipped = np.clip(ly, -1.0, 1.0)
+        lx_clipped = -np.clip(lx, -1.0, 1.0)  # Inverted for intuitive control
+        rx_clipped = -np.clip(rx, -1.0, 1.0)  # Inverted for intuitive control
+        
+        # Map stick values to velocity: stick=0 always gives velocity=0
+        # For negative stick: velocity = stick * abs(min_vel)
+        # For positive stick: velocity = stick * max_vel
+        lin_vel_z = ly_clipped * self.vel_forward_range[1] if ly_clipped >= 0 else ly_clipped * abs(self.vel_forward_range[0])
+        lin_vel_y = lx_clipped * self.vel_lateral_range[1] if lx_clipped >= 0 else lx_clipped * abs(self.vel_lateral_range[0])
+        ang_vel_x = rx_clipped * self.vel_yaw_range[1] if rx_clipped >= 0 else rx_clipped * abs(self.vel_yaw_range[0])
         
         velocity_commands = np.array([lin_vel_z, lin_vel_y, ang_vel_x], dtype=np.float32)
         
@@ -914,8 +907,8 @@ class Controller:
         # Get actions from policy (in PyTorch order)
         pytorch_actions = self.policy.get_control(obs)
         
-        # SAFETY CHECK: Verify state and actions are safe before proceeding
-        if not self.check_safety_limits(pytorch_actions):
+        # SAFETY CHECK: Verify state and actions are safe before proceeding (if enabled)
+        if ENABLE_SAFETY_MONITORING and not self.check_safety_limits(pytorch_actions):
             # Safety violation detected - check_safety_limits already switched to damped mode
             # Send damping command and return early
             create_damping_cmd(self.low_cmd)
@@ -945,32 +938,6 @@ class Controller:
             for idx in clamped_indices:
                 joint_name = MUJOCO_JOINT_NAMES[idx]
                 print(f"  {joint_name}: {motor_targets_unclamped[idx]:.3f} -> {motor_targets[idx]:.3f} (limits: [{self._joint_lower_bounds[idx]:.3f}, {self._joint_upper_bounds[idx]:.3f}])")
-
-        # Log joint positions and targets periodically
-        current_time = time.time()
-        if current_time - self._last_joint_log_time >= self._joint_log_interval:
-            self._last_joint_log_time = current_time
-            
-            # Get current absolute joint positions
-            current_absolute_positions = np.zeros(G1_NUM_MOTOR, dtype=np.float32)
-            for i in range(G1_NUM_MOTOR):
-                current_absolute_positions[i] = self.low_state.motor_state[joint2motor_idx[i]].q
-            
-            # Log header
-            self.logger.info("-" * 80)
-            self.logger.info(f"JOINT STATE | Policy: [{self._current_policy_idx}] {self._policy_paths[self._current_policy_idx]}")
-            
-            # Log each joint
-            for i in range(G1_NUM_MOTOR):
-                joint_name = MUJOCO_JOINT_NAMES[i]
-                current_pos = current_absolute_positions[i]
-                target_pos = motor_targets[i]
-                error = target_pos - current_pos
-                self.logger.info(
-                    f"  {joint_name:25s} | Current: {current_pos:7.3f} | Target: {target_pos:7.3f} | Error: {error:7.3f}"
-                )
-            
-            self.logger.info("-" * 80)
 
         # print(f"Kp: {Kp}")
         # print(f"Kd: {Kd}")
@@ -1032,25 +999,25 @@ if __name__ == "__main__":
     print("  D-PAD RIGHT: Neural network control mode")
     print(f"  A: Cycle through loaded policies ({'loops' if LOOP_POLICIES else 'stops at last'})")
     print("  F1: RED LED")
-    print("\nVelocity commands (in neural network mode):")
-    print(f"  Left stick Y: Forward/backward (±{MAX_LIN_VEL_FORWARD} m/s)")
-    print(f"  Left stick X: Strafe left/right (±{MAX_LIN_VEL_LATERAL} m/s)")
-    print(f"  Right stick X: Rotate/yaw (±{MAX_ANG_VEL_YAW} rad/s)")
+    print("\nVelocity commands (in neural network mode, policy-dependent limits):")
+    print(f"  Left stick Y: Forward/backward")
+    print(f"  Left stick X: Strafe left/right")
+    print(f"  Right stick X: Rotate/yaw")
     print("\nKeyboard tuning (non-blocking, no Enter needed):")
-    print(f"  q/a: legs KP +/- {GAIN_STEP}")
-    print(f"  w/s: legs KD +/- {GAIN_STEP}")
-    print(f"  e/d: upper KP +/- {GAIN_STEP}")
-    print(f"  r/f: upper KD +/- {GAIN_STEP}")
-    print("  h  : print current gain multipliers")
+    print(f"  q/a: Gain multiplier +/- {GAIN_STEP}")
+    print("  h  : Print current gain multiplier")
     print("\nAlways active:")
     print("  Start: ENABLE system (press this first!)")
     print("  Select: QUIT immediately")
     print("\nSafety features:")
-    print("  - Remote heartbeat: Auto-damped if remote disconnects (timeout: 0.5s)")
-    print("  - Position jump detection: Max 0.3 rad/timestep (15 rad/s)")
-    print("  - Velocity spike detection: Max 25.0 rad/s")
-    print("  - Acceleration spike detection: Max 1500 rad/s^2")
-    print("  - Auto-damped mode on any safety violation")
+    print("  - Remote heartbeat: Auto-damped if remote disconnects (timeout: 0.5s) [ALWAYS ON]")
+    if ENABLE_SAFETY_MONITORING:
+        print("  - Position jump detection: Max 0.4 rad/timestep (20 rad/s) [ENABLED]")
+        print("  - Velocity spike detection: Max 25.0 rad/s [ENABLED]")
+        print("  - Acceleration spike detection: Max 1500 rad/s^2 [ENABLED]")
+        print("  - Auto-damped mode on any safety violation")
+    else:
+        print("  - Position/velocity/acceleration monitoring: [DISABLED]")
     print(f"\nMotor commands: {'ENABLED' if ENABLE_MOTOR_COMMANDS else 'DISABLED (test mode)'}")
 
     ChannelFactoryInitialize(0, NETWORK_CARD_NAME)
@@ -1060,32 +1027,23 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Controller ready. Press START to begin!")
     print("=" * 60)
+    print(f"\nActive policy configuration:")
+    print(f"  Velocity limits:")
+    print(f"    Forward: [{controller.vel_forward_range[0]}, {controller.vel_forward_range[1]}] m/s")
+    print(f"    Lateral: [{controller.vel_lateral_range[0]}, {controller.vel_lateral_range[1]}] m/s")
+    print(f"    Yaw: [{controller.vel_yaw_range[0]}, {controller.vel_yaw_range[1]}] rad/s")
+    print(f"  Gain multiplier: {controller.gain_multiplier:.2f}")
     with NonBlockingInput() as kb:
         while True:
             # Handle keyboard (single key, non-blocking)
             if select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
                 ch = sys.stdin.read(1)
                 if ch == 'q':
-                    controller.adjust_gains('legs', 'kp', +GAIN_STEP)
+                    controller.adjust_gains(+GAIN_STEP)
                 elif ch == 'a':
-                    controller.adjust_gains('legs', 'kp', -GAIN_STEP)
-                elif ch == 'w':
-                    controller.adjust_gains('legs', 'kd', +GAIN_STEP)
-                elif ch == 's':
-                    controller.adjust_gains('legs', 'kd', -GAIN_STEP)
-                elif ch == 'e':
-                    controller.adjust_gains('upper', 'kp', +GAIN_STEP)
-                elif ch == 'd':
-                    controller.adjust_gains('upper', 'kp', -GAIN_STEP)
-                elif ch == 'r':
-                    controller.adjust_gains('upper', 'kd', +GAIN_STEP)
-                elif ch == 'f':
-                    controller.adjust_gains('upper', 'kd', -GAIN_STEP)
+                    controller.adjust_gains(-GAIN_STEP)
                 elif ch == 'h':
-                    print(
-                        f"Gains | legs: kp={controller.kp_multiplier_legs:.2f} kd={controller.kd_multiplier_legs:.2f}  "
-                        f"upper: kp={controller.kp_multiplier_upper:.2f} kd={controller.kd_multiplier_upper:.2f}"
-                    )
+                    print(f"Gain multiplier: {controller.gain_multiplier:.2f}")
 
             # Check remote heartbeat first (safety check)
             controller.check_remote_heartbeat()

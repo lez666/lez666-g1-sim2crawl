@@ -686,10 +686,7 @@ def run_single_sweep(sweep_config, sweep_number, total_sweeps):
         # Log analysis error
         with open(log_file, 'a') as f:
             f.write(f"\n❌ {error_msg}\n")
-            f.write("You can manually run analysis later with:\n")
-            f.write("python sweep_analyzer.py\n")
-        print(f"   You can manually run analysis later with:")
-        print(f"   python sweep_analyzer.py")
+
     # Always write and print the absolute path to the sweep output directory when done
     abs_sweep_output_dir = os.path.abspath(sweep_output_dir)
     with open(log_file, 'a') as f:
