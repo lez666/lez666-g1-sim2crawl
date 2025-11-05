@@ -91,3 +91,8 @@ python sim2sim_mj/run_sim2sim.py
 - Sweep outputs (guides/videos/mapping): `sweep-logs/<experiment_name>_<timestamp>/`
 - Sim2Sim policies: `sim2sim_mj/policies/`
 - Sim2Sim diagnostics: `outputs/diagnostics/`
+
+### 3D Printed Parts (Onshape links)
+- [Head parts (requires heat-set inserts for screws)](https://cad.onshape.com/documents/51f2b1c723880a644b5e4295/w/26b9ae2d16dd6818ee2cba50/e/2c03d03c2d68d17d48cc747c?renderMode=0&uiState=690ba6558c75f7c496f162c5)
+- [Custom arms (requires a squash ball)](https://cad.onshape.com/documents/be995b1470263c9f303ec0a3/w/a8114830271f7d8f2d8df84b/e/bdf2f54b49628d7c3c8cd944?renderMode=0&uiState=690ba6ab9ccb00f927e7e3db)
+- Corresponding 3MF print files live in `3d-printed-parts/`.
