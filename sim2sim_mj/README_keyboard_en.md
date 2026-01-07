@@ -312,4 +312,4 @@ This keyboard control functionality is based on the original project's gamepad c
 
 ---
 
-*Last updated: 2024*
+*Last updated: 2026.1*
