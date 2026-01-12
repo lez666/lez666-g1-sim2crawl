@@ -55,6 +55,8 @@ All credit for the original G1 crawling policy and Isaac Lab training framework 
 conda activate g1-crawl
 pip install -r sim2sim_mj/requirements.txt
 python sim2sim_mj/run_sim2sim_keyboard.py
+```
+
 No controller required — just use your keyboard.
 
 ---
@@ -87,6 +89,7 @@ You can also use a standard controller:
 
 ```bash
 python sim2sim_mj/run_sim2sim.py
+```
 
 Supports:
 
@@ -104,11 +107,13 @@ Supports:
 
 ```bash
 python scripts/rsl_rl/train.py --task g1-crawl --headless
+```
 
 ## 🧪 Play a Trained Policy
 
 ```bash
 python scripts/rsl_rl/play.py --task g1-crawl --headless --video --enable_cameras
+```
 
 ## 🤖 Real Robot Deployment
 
