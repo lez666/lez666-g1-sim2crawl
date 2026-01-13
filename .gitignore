@@ -66,3 +66,9 @@ tests/
 
 # Docker history
 .isaac-lab-docker-history
+
+# Sim2Sim outputs and diagnostics
+outputs/diagnostics/*.csv
+sim2sim_mj/__pycache__/
+sim2sim_mj/MUJOCO_LOG.TXT
+sim2sim_mj/Cycle

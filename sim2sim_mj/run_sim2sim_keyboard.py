@@ -237,15 +237,44 @@ DEFAULT_SET_MAP: dict[str, dict[str, float]] = {
     "crawl": TRAINING_DEFAULT_ANGLES,
 }
 
-def resolve_default_joint_positions(policy_path: Path, policy_defaults_map: dict[str, str]) -> dict[str, float]:
+def resolve_default_joint_positions(policy_path: Path, policy_defaults_map: dict[str, str], script_dir: Path | None = None) -> dict[str, float]:
     """Return default joint positions for a policy based on explicit mapping.
 
     Requires an explicit entry in policy_defaults_map; fails loudly if missing.
+    
+    Args:
+        policy_path: Path to policy file (can be absolute or relative)
+        policy_defaults_map: Dictionary mapping policy paths to default set names
+        script_dir: Optional script directory for resolving relative paths
     """
-    key = str(policy_path)
+    # Try multiple key formats for matching
+    policy_path_str = str(policy_path)
+    policy_path_abs = policy_path.absolute()
+    
+    # Try absolute path first
+    key = str(policy_path_abs)
+    if key not in policy_defaults_map:
+        # Try relative path (if script_dir provided)
+        if script_dir:
+            try:
+                rel_path = policy_path_abs.relative_to(script_dir)
+                key = str(rel_path)
+            except ValueError:
+                pass
+        
+        # If still not found, try just the filename
+        if key not in policy_defaults_map:
+            key = policy_path.name
+        
+        # If still not found, try original string
+        if key not in policy_defaults_map:
+            key = policy_path_str
+    
+    # Final check
     if key not in policy_defaults_map:
         available = ", ".join(sorted(policy_defaults_map.keys())) if policy_defaults_map else "(none)"
-        raise KeyError(f"No default set mapped for policy '{key}'. Available mappings: {available}")
+        raise KeyError(f"No default set mapped for policy '{policy_path_str}'. Tried keys: '{key}'. Available mappings: {available}")
+    
     set_name = str(policy_defaults_map[key])
     if set_name not in DEFAULT_SET_MAP:
         valid = ", ".join(sorted(DEFAULT_SET_MAP.keys()))
@@ -1176,7 +1205,9 @@ class StandalonePolicyController:
         self._current_policy_path = policy_path
         
         # Update default joint positions according to new policy (explicit mapping)
-        new_defaults = resolve_default_joint_positions(policy_path, self.policy_defaults_map)
+        # Try to resolve script_dir from policy_path (assume it's in sim2sim_mj/policies/)
+        script_dir = policy_path.parent.parent if policy_path.parent.name == "policies" else None
+        new_defaults = resolve_default_joint_positions(policy_path, self.policy_defaults_map, script_dir)
         self._update_default_positions_from_map(new_defaults)
         
         # Reset last actions to avoid discontinuities
@@ -1418,13 +1449,16 @@ def load_initial_pose(json_path: Path, mj_model: mujoco.MjModel, data: mujoco.Mj
 def main():
     """Main entry point for standalone deployment."""
     
-    # Parse config
-    model_xml = Path(CONFIG["model_xml"])
-    policy_path = Path(CONFIG["policy_path"])
+    # Get script directory to resolve relative paths
+    script_dir = Path(__file__).parent.absolute()
+    
+    # Parse config - resolve paths relative to script directory
+    model_xml = script_dir / CONFIG["model_xml"]
+    policy_path = script_dir / CONFIG["policy_path"]
     device = CONFIG["device"]
     action_scale = CONFIG["action_scale"]
     n_substeps = CONFIG["n_substeps"]
-    init_pose_json = Path(CONFIG["init_pose_json"]) if CONFIG["init_pose_json"] else None
+    init_pose_json = (script_dir / CONFIG["init_pose_json"]) if CONFIG["init_pose_json"] else None
     
     use_gamepad = CONFIG["use_gamepad"]
     max_lin_vel = CONFIG.get("max_lin_vel", 2.0)
@@ -1536,7 +1570,8 @@ def main():
     if not isinstance(policy_defaults_map, dict):
         raise TypeError("CONFIG['policy_defaults'] must be a dict of {policy_path: default_set}")
     # Validate presence for initial policy and any policies in the cycle
-    init_key = str(policy_path)
+    # Convert policy paths to relative strings for comparison with config
+    init_key = str(Path(CONFIG["policy_path"]))  # Use original config path for key
     if init_key not in policy_defaults_map:
         raise KeyError(f"Initial policy '{init_key}' missing from CONFIG['policy_defaults']")
     for p in policy_cycle or []:
@@ -1544,7 +1579,7 @@ def main():
             raise KeyError(f"Policy '{p}' in policy_cycle missing from CONFIG['policy_defaults']")
     
     # Choose per-policy default joint positions (explicit)
-    init_defaults = resolve_default_joint_positions(policy_path, policy_defaults_map)
+    init_defaults = resolve_default_joint_positions(policy_path, policy_defaults_map, script_dir)
     
     controller = StandalonePolicyController(
         policy_path=policy_path,
@@ -1687,7 +1722,9 @@ def main():
                     # Check for policy switch (only in policy mode)
                     new_policy_path = keyboard.check_policy_switch()
                     if new_policy_path:
-                        controller.load_policy(Path(new_policy_path))
+                        # Resolve policy path relative to script directory
+                        policy_full_path = script_dir / new_policy_path
+                        controller.load_policy(policy_full_path)
                 else:
                     lin_vel_z, lin_vel_y, ang_vel_x = 0.0, 0.0, 0.0
             
@@ -1701,7 +1738,9 @@ def main():
                 # Check for policy switch
                 new_policy_path = gamepad.check_policy_switch()
                 if new_policy_path:
-                    controller.load_policy(Path(new_policy_path))
+                    # Resolve policy path relative to script directory
+                    policy_full_path = script_dir / new_policy_path
+                    controller.load_policy(policy_full_path)
                 
                 # Check for exit button
                 if gamepad.check_exit():

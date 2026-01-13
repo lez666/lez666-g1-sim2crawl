@@ -51,11 +51,36 @@ All credit for the original G1 crawling policy and Isaac Lab training framework 
 
 ## 🚀 Quick Start (Keyboard Sim2Sim)
 
+### 方式一：自动安装（推荐）
+
 ```bash
+# 克隆仓库
+git clone <your-repo-url>
+cd lez666-g1-sim2crawl
+
+# 运行自动安装脚本
+./setup.sh
+
+# 激活环境并运行
 conda activate g1-crawl
-pip install -r sim2sim_mj/requirements.txt
 python sim2sim_mj/run_sim2sim_keyboard.py
 ```
+
+### 方式二：手动安装
+
+```bash
+# 创建环境
+conda create -n g1-crawl python=3.10 -y
+conda activate g1-crawl
+
+# 安装依赖
+pip install -r sim2sim_mj/requirements.txt
+
+# 运行仿真
+python sim2sim_mj/run_sim2sim_keyboard.py
+```
+
+详细安装说明请参考 [INSTALL.md](INSTALL.md)
 
 No controller required — just use your keyboard.
 
